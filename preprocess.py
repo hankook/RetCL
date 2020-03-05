@@ -8,7 +8,9 @@ def preprocess_uspto50k(datadir, force=False):
         shutil.rmtree(os.path.join('.cache', 'data', dataset))
 
     sets = load_dataset(dataset, datadir)
-    del sets['molset']
+    for key in list(sets.keys()):
+        if key not in ['train', 'val', 'test']:
+            del sets[key]
 
     vocabfile = os.path.join('.cache', 'data', dataset, 'vocab.pth')
     if not os.path.isfile(vocabfile):
