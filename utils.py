@@ -46,8 +46,8 @@ class SMILESTokenizer(object):
                 tokens = set(_tokenize_smiles(x))
             return tokens
         tokens = [(tok, i+4) for i, tok in enumerate(sorted(list(_find_tokens(molecules))))]
-        vocab = OrderedDict([(self.PAD_TOKEN, 0), (self.BOS_TOKEN, 1),
-                             (self.EOS_TOKEN, 2), (self.UNK_TOKEN, 3)] + tokens)
+        vocab = OrderedDict([(cls.PAD_TOKEN, 0), (cls.BOS_TOKEN, 1),
+                             (cls.EOS_TOKEN, 2), (cls.UNK_TOKEN, 3)] + tokens)
         return vocab
 
     def __init__(self, vocab_file):
