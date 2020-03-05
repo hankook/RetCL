@@ -139,6 +139,7 @@ def load_dataset(dataset, datadir, augment=False, num_reactants=None):
                     train_molecules |= set(rs.split('.'))
         sets['molset_train'] = MoleculeSet(train_molecules)
         sets['molset'] = MoleculeSet(known_molecules)
+        sets['molset_valtest_r'] = MoleculeSet(sets['val'].reactants+sets['test'].reactants)
 
         if num_reactants is not None:
             for split in ['train', 'val', 'test']:
