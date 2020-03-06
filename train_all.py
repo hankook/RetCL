@@ -93,14 +93,17 @@ def main(args):
         # retrosynthesis score: 1st element
         scores = torch.matmul(F.normalize(prod_features[:B]),
                               F.normalize(reac_features).t()).div(args.tau)
+        positive_masks = torch.zeros_like(scores, dtype=torch.bool)
+        negative_masks = torch.ones_like(scores)
         for i in range(B):
-            negative_masks = torch.ones(reac_features.shape[0], dtype=torch.bool)
-            negative_masks[i] = False
-            negative_masks[offsets[i]+1:offsets[i+1]] = False
-            loss += torch.logsumexp(scores[i][negative_masks], 0) - scores[i][offsets[i]]
+            positive_masks[i, offsets[i]] = 1
+            negative_masks[i, i] = 0
+            negative_masks[i, offsets[i]+1:offsets[i+1]] = 0
 
-            with torch.no_grad():
-                corrects.append(scores[i][negative_masks].argmax(0).item() == offsets[i].item()-1)
+        loss += (scores.exp().mul(negative_masks).sum(1).log() - scores[positive_masks]).sum()
+
+        with torch.no_grad():
+            corrects = scores.exp().mul(negative_masks).argmax(1) == offsets[:B]
 
         # retrosynthesis score: 2nd element
         scores = torch.matmul(F.normalize(prod_features[:B] - reac_features[offsets[:B]]),
@@ -108,7 +111,7 @@ def main(args):
         loss += F.cross_entropy(scores, offsets[1:]-1, reduction='none').mul((num_reactants>1).float()).sum()
 
         corrects = torch.stack([
-            torch.tensor(corrects).to(device),
+            corrects,
             (scores.argmax(1) == offsets[1:]-1) | (num_reactants == 1)], 0)
         corrects = corrects.all(0)
         acc = corrects.float().mean().item()
@@ -117,10 +120,13 @@ def main(args):
         scores = torch.matmul(
             F.normalize(torch.stack([reac_features[offsets[i]:offsets[i+1]].sum(0) for i in range(B)], 0)),
             F.normalize(prod_features).t()).div(args.tau)
+        positive_masks = torch.zeros_like(scores, dtype=torch.bool)
+        negative_masks = torch.ones_like(scores)
         for i in range(B):
-            negative_masks = torch.ones(prod_features.shape[0], dtype=torch.bool)
-            negative_masks[offsets[i]:offsets[i+1]] = False
-            loss += torch.logsumexp(scores[i][negative_masks], 0) - scores[i][i]
+            positive_masks[i, i] = 1
+            negative_masks[i, offsets[i]:offsets[i+1]] = 0
+
+        loss += (scores.exp().mul(negative_masks).sum(1).log() - scores[positive_masks]).sum()
 
         loss /= 2. * B
 

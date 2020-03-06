@@ -63,6 +63,13 @@ class Model(nn.Module):
 
 
     def forward(self, inputs, masks, pooling=None):
+        # remove padding
+        for i, mask in enumerate(masks.any(1)):
+            if not mask.item():
+                inputs = inputs[:, :i]
+                masks = masks[:, :i]
+                break
+
         inputs = inputs.transpose(0, 1)
         padding_mask = ~masks
         outputs = self.base(self.embedding(inputs), src_key_padding_mask=padding_mask)
