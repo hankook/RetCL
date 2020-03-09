@@ -5,14 +5,14 @@ from utils import SMILESTokenizer
 def preprocess_uspto50k(datadir, force=False):
     dataset = 'uspto50k'
     if force:
-        shutil.rmtree(os.path.join('.cache', 'data', dataset))
+        shutil.rmtree(os.path.join('.cache', datadir))
 
     sets = load_dataset(dataset, datadir)
     for key in list(sets.keys()):
         if key not in ['train', 'val', 'test']:
             del sets[key]
 
-    vocabfile = os.path.join('.cache', 'data', dataset, 'vocab.pth')
+    vocabfile = os.path.join('.cache', datadir, 'vocab.pth')
     if not os.path.isfile(vocabfile):
         molecules = []
         for data in sets.values():

@@ -107,7 +107,7 @@ def load_dataset(dataset, datadir, augment=False, num_reactants=None):
 
         def _load(split):
             filename = os.path.join(datadir, 'raw_{}.csv'.format(split))
-            savefile = os.path.join('.cache', 'data', dataset, '{}.pth'.format(split))
+            savefile = os.path.join('.cache', datadir, '{}.pth'.format(split))
             os.makedirs(os.path.dirname(savefile), exist_ok=True)
             if os.path.isfile(savefile):
                 return torch.load(savefile)
