@@ -152,10 +152,35 @@ def load_dataset(dataset, datadir, augment=False, num_reactants=None):
         return sets
 
 
-def build_dataloader(dataset, batch_size, num_iterations=None):
+class BatchSampler(torch.utils.data.Sampler):
+
+    def __init__(self, dataset, batch_size, num_iterations):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.num_iterations = num_iterations
+
+    def __len__(self):
+        return self.num_iterations
+
+    def __iter__(self):
+        indices = []
+        for _ in range(self.num_iterations):
+            if len(indices) < self.batch_size:
+                indices = torch.randperm(len(self.dataset)).tolist()
+
+            yield indices[:self.batch_size]
+
+            indices = indices[self.batch_size:]
+
+
+def build_dataloader(dataset, batch_size, num_iterations=None, replacement=False):
     if num_iterations is None:
         return DataLoader(dataset, batch_size=batch_size, shuffle=False)
     else:
-        return DataLoader(dataset, batch_size=batch_size,
-                          sampler=RandomSampler(dataset, replacement=True, num_samples=num_iterations*batch_size))
+        if not replacement:
+            return DataLoader(dataset, batch_size=batch_size,
+                              sampler=RandomSampler(dataset, replacement=True, num_samples=num_iterations*batch_size))
+        else:
+            return DataLoader(dataset,
+                              batch_sampler=BatchSampler(dataset, batch_size, num_iterations))
 

@@ -1,5 +1,19 @@
 import math, torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+def masked_pooling(inputs, masks, mode='sum'):
+    # inputs: N x T x C
+    # masks:  N x T     (boolean)
+
+    masks = masks.unsqueeze(-1).float()
+    if mode == 'sum':
+        return inputs.mul(masks).sum(1)
+    elif mode == 'mean':
+        return inputs.mul(masks).mean(1)
+    else:
+        raise Exception('Unknown mode: {}'.format(mode))
 
 
 class Identity(nn.Module):
@@ -27,7 +41,53 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
+class ResidualLayer(nn.ModuleList):
+
+    def __init__(self, num_channels, num_layers):
+        layers = []
+        for _ in range(num_layers):
+            layers.append(nn.Sequential(
+                nn.BatchNorm1d(num_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(num_channels, num_channels),
+                nn.BatchNorm1d(num_channels),
+                nn.ReLU(inplace=True),
+                nn.Linear(num_channels, num_channels)))
+        super(ResidualLayer, self).__init__(layers)
+
+    def forward(self, x):
+        for layer in self:
+            x = x+layer(x)
+        return x
+
+class ResidualFeedforwardLayer(nn.Module):
+
+    def __init__(self, in_channels, intermediate_channels=None, out_channels=None, num_candidates=1, dropout=0.1):
+        super(ResidualFeedforwardLayer, self).__init__()
+        
+        if intermediate_channels is None:
+            intermediate_channels = in_channels
+        if out_channels is None:
+            out_channels = in_channels
+
+        self.num_candidates = num_candidates
+
+        self.layer1 = nn.Linear(in_channels, intermediate_channels)
+        self.layer2 = nn.Linear(intermediate_channels, out_channels*num_candidates)
+        self.relu = nn.ReLU(inplace=True)
+        self.norm = nn.LayerNorm(out_channels*num_candidates)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        y = self.dropout(self.layer2(self.dropout(self.relu(self.layer1(x)))))
+        if self.num_candidates > 1:
+            sizes = [1] * (x.ndim-1) + [self.num_candidates]
+            x = x.repeat(*sizes)
+        return self.norm(x+y)
+
+
 class Model(nn.Module):
+
     def __init__(self,
                  vocab_size=None,
                  hidden_size=256,
@@ -88,6 +148,154 @@ class Model(nn.Module):
         return outputs
 
 
+class Encoder(nn.Module):
+
+    def __init__(self,
+                 vocab_size=None,
+                 hidden_size=256,
+                 num_attention_heads=8,
+                 intermediate_size=2048,
+                 num_layers=4,
+                 dropout=0.1,
+                 activation='gelu'):
+        super(Encoder, self).__init__()
+
+        if vocab_size is None:
+            self.embedding = lambda x: x
+        else:
+            self.embedding = nn.Sequential(
+                    nn.Embedding(vocab_size, hidden_size),
+                    PositionalEncoding(hidden_size))
+
+        layer = nn.TransformerEncoderLayer(d_model=hidden_size,
+                                           nhead=num_attention_heads,
+                                           dim_feedforward=intermediate_size,
+                                           dropout=dropout,
+                                           activation=activation)
+
+        self.base = nn.TransformerEncoder(layer, num_layers)
+
+    def forward(self, inputs, masks, pooling=None, residual=False):
+        """
+        arguments:
+            inputs: B x T x C
+            masks:  B x T     (0 => padding)
+
+        return:
+            outputs: B x C
+        """
+        inputs = inputs.transpose(0, 1)
+        padding_mask = ~masks
+        outputs = self.base(self.embedding(inputs), src_key_padding_mask=padding_mask)
+        if residual:
+            outputs = inputs + outputs
+
+        if pooling == 'sum':
+            masks = masks.t().float().unsqueeze(-1)
+            outputs = outputs.mul(masks).sum(0)
+        elif pooling == 'mean':
+            masks = masks.t().float().unsqueeze(-1)
+            outputs = outputs.mul(masks).mean(0)
+        else:
+            outputs = outputs.transpose(0, 1)
+
+        return outputs
+
+
+def _generate_square_subsequent_mask(sz):
+    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    return mask
+
+
+class Decoder(nn.Module):
+
+    def __init__(self,
+                 hidden_size=256,
+                 num_attention_heads=8,
+                 intermediate_size=2048,
+                 num_layers=3,
+                 dropout=0.1,
+                 activation='gelu'):
+        super(Decoder, self).__init__()
+
+        layer = nn.TransformerDecoderLayer(d_model=hidden_size,
+                                           nhead=num_attention_heads,
+                                           dim_feedforward=intermediate_size,
+                                           dropout=dropout,
+                                           activation=activation)
+
+        self.base = nn.TransformerDecoder(layer, num_layers)
+
+    def forward(self, inputs, memory, masks):
+        """
+        arguments:
+            inputs: B x T x C
+            memory: B x C
+            masks:  B x T     (0 => padding)
+
+        return:
+            outputs: B x T x C
+        """
+
+        padding_mask = ~masks
+        tgt_mask = _generate_square_subsequent_mask(inputs.shape[1]).to(inputs.device)
+        outputs = self.base(inputs.transpose(0, 1), memory.unsqueeze(0),
+                            tgt_key_padding_mask=padding_mask,
+                            tgt_mask=tgt_mask)
+
+        return outputs.transpose(0, 1)
+
+class MaskedAttentionPooling(nn.Module):
+
+    def __init__(self,
+                 hidden_size=256,
+                 num_candidates=2,
+                 mode='basic'):
+        super(MaskedAttentionPooling, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_candidates = num_candidates
+        self.projection = nn.Linear(hidden_size, num_candidates)
+        self.mode = 'basic'
+
+    def forward(self, inputs, masks):
+        """
+        inputs: N x T x d
+        masks:  N x T
+
+        return: N x C x d
+        """
+        scores = self.projection(inputs)
+        if self.mode == 'sqrt':
+            scores = scores.div(self.hidden_size ** 0.5)
+        scores = scores.masked_fill(~masks.unsqueeze(2), float('-inf')).softmax(1)
+        scores = scores.unsqueeze(3)
+        inputs = inputs.unsqueeze(2)
+        return inputs.mul(scores).sum(1)
+
+class AttentionScoreFunction(nn.Module):
+    def __init__(self, mode='basic'):
+        super(AttentionScoreFunction, self).__init__()
+        self.mode = mode
+
+    def forward(self, keys, queries):
+        """
+        keys:    N x C x d
+        queries: M x d
+        """
+
+        N, C, d = keys.shape
+        M, d = queries.shape
+
+        scores = keys.view(N*C, d).matmul(queries.t()).view(N, C, M)
+        if self.mode == 'sqrt':
+            scores = scores.div(d ** 0.5)
+        weights = scores.softmax(1)
+        weighted_keys = keys.unsqueeze(2).mul(weights.unsqueeze(3)).sum(1) # N x M x d
+
+        weighted_keys = F.normalize(weighted_keys, dim=-1)
+        queries = F.normalize(queries, dim=-1)
+        return weighted_keys.mul(queries.unsqueeze(0)).sum(2) # N x M
 
 def load_embedding(**kwargs):
     return nn.Sequential(nn.Embedding(kwargs['vocab_size'], kwargs['hidden_size']),

@@ -1,5 +1,8 @@
 import torch, os, re, logging, random
+import torch.nn.functional as F
 from collections import OrderedDict
+from rdkit import Chem
+import dgl
 
 
 def set_logging_options(logdir):
@@ -13,6 +16,19 @@ def set_logging_options(logdir):
     logger.addHandler(fh)
     logger.addHandler(sh)
     logger.propagate = False
+
+
+def read_candidate_file(filename, n):
+    all_reactants = []
+    with open(filename) as f:
+        for line in f.readlines():
+            reactants = ''.join(line.split(',')[0].split()).split('.')
+            all_reactants.append(reactants)
+    assert len(all_reactants) % n == 0
+    k = len(all_reactants) // n
+
+    all_reactants = [all_reactants[i*k:(i+1)*k] for i in range(n)]
+    return all_reactants
 
 
 def _tokenize_smiles(text):
@@ -90,4 +106,70 @@ class SMILESTokenizer(object):
             input_ids, masks = input_ids.to(device), masks.to(device)
 
         return input_ids, masks
+
+def _convert_smiles_to_graph(smiles):
+    m = Chem.MolFromSmiles(smiles)
+    atom_features = []
+    for i, atom in enumerate(m.GetAtoms()):
+        atom_features.append((
+            atom.GetAtomicNum(),
+            atom.GetTotalNumHs()))
+
+    bond_features = []
+    for bond in mol.GetBonds():
+        bond_features.append((
+            bond.GetBeginAtomIdx(),
+            bond.GetEndAtomIdx(),
+            bond.GetBondType()))
+
+    return atom_features, bond_features
+
+class SMILESGraph(object):
+
+    @classmethod
+    def build_vocab(cls, molecules):
+        atoms = set()
+        max_num_Hs = 0
+        for m in molecules:
+            graph = _convert_smiles_to_graph(m)
+            for atom in graph[0]:
+                atoms.add(atom[0])
+                max_num_Hs = max(max_num_Hs, atom[1])
+
+        vocab = {
+            'atoms': OrderedDict([(atomic_num, i) for i, atomic_num in sorted(list(atoms))]),
+            'max_num_Hs': max_num_Hs,
+            'bonds': {
+                Chem.rdchem.BondType.SINGLE: 0,
+                Chem.rdchem.BondType.DOUBLE: 1,
+                Chem.rdchem.BondType.TRIPLE: 2,
+                Chem.rdchem.BondType.AROMATIC: 3, },
+        }
+        return vocab
+
+    def __init__(self, vocab_file):
+        self.vocab = torch.load(vocab_file)
+
+    def encode(self, molecules, device=None):
+        graphs = []
+        for m in molecules:
+            atom_features, bond_features = _convert_smiles_to_graph(m)
+            atom_features = [(self.vocab['atoms'][atom[0]], atom[1]) for atom in atom_features]
+            atom_features = torch.tensor(atom_features, dtype=torch.long)
+            bond_features = [(i, j, self.vocab['bonds'][bond[2]]) for bond in bond_features]
+            bond_features = torch.tensor(bond_features, dtype=torch.long)
+
+            g = dgl.DGLGraph()
+            g.add_nodes(atom_features.shape[0])
+            g.add_edges(bond_features[:, 0], bond_features[:, 1])
+            g.add_edges(bond_features[:, 1], bond_features[:, 0])
+
+            g.ndata['x'] = torch.cat([
+                F.one_hot(atom_features[:, 0], len(self.vocab['atoms'])),
+                F.one_hot(atom_features[:, 1], self.vocab['max_num_Hs']), 1])
+            g.edata['w'] = F.one_hot(bond_features[:, 2], len(self.vocab['bonds']))
+
+            graphs.append(g)
+
+        return dgl.batch(graphs)
 
