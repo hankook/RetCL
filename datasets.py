@@ -1,5 +1,5 @@
-import os, csv, random, dgl, logging, torch, numpy as np
-from collections import defaultdict, OrderedDict, namedtuple
+import os, csv, dgl, logging, torch, numpy as np, re
+from collections import OrderedDict, namedtuple
 from torch.utils.data import Dataset, Subset, DataLoader, RandomSampler
 from rdkit import Chem
 from dgl.data.chem import smiles_to_bigraph, CanonicalBondFeaturizer, CanonicalAtomFeaturizer
@@ -15,7 +15,7 @@ def _canonicalize_smiles(smiles):
 
 def _tokenize_smiles(smiles):
     pattern =  "(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
-    return list(re.compile(pattern).findall(text))
+    return list(re.compile(pattern).findall(smiles))
 
 
 Molecule = namedtuple('Molecule', 'smiles graph token_ids')
@@ -75,7 +75,7 @@ class MoleculeDictionary(Dataset):
 
         smiles = self._smiles[idx]
         graph  = self._graphs[idx]
-        tokens = ['<bos>'] + _tokenize_smiles(smeils) + ['<eos>']
+        tokens = ['<bos>'] + _tokenize_smiles(smiles) + ['<eos>']
         token_ids = [self._vocab[t] for t in tokens]
 
         return Molecule(smiles=self._smiles[idx], graph=self._graphs[idx], token_ids=token_ids)
@@ -140,14 +140,14 @@ def load_dataset(dataset, datadir):
 
         datasets = { split: ReactionDataset(*data[split], mol_dict) for split in ['train', 'val', 'test'] }
 
-        datasets['mol_dict'] = Subset(mol_dict, known_indices)
-        datasets['mol_dict_all'] = mol_dict
+        datasets['known_mol_dict'] = Subset(mol_dict, known_indices)
+        datasets['mol_dict'] = mol_dict
 
     logger.info('- # of reactions in train/val/test splits: {} / {} / {}'.format(len(datasets['train']),
                                                                                  len(datasets['val']),
                                                                                  len(datasets['test'])))
-    logger.info('- # of known/all molecules: {} / {}'.format(len(datasets['mol_dict']),
-                                                             len(datasets['mol_dict_all'])))
+    logger.info('- # of known/all molecules: {} / {}'.format(len(datasets['known_mol_dict']),
+                                                             len(datasets['mol_dict'])))
 
     return datasets
 
