@@ -6,16 +6,10 @@ import dgl
 
 
 def set_logging_options(logdir):
-    logger = logging.getLogger('main')
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("[%(asctime)s - %(filename)s] %(message)s")
-    fh = logging.FileHandler(os.path.join(logdir, 'log.txt'))
-    sh = logging.StreamHandler(os.sys.stdout)
-    fh.setFormatter(formatter)
-    sh.setFormatter(formatter)
-    logger.addHandler(fh)
-    logger.addHandler(sh)
-    logger.propagate = False
+    logging.basicConfig(format="[%(asctime)s - %(filename)s] %(message)s",
+                        level=logging.INFO,
+                        handlers=[logging.FileHandler(os.path.join(logdir, 'log.txt')),
+                                  logging.StreamHandler(os.sys.stdout)])
 
 
 def read_candidate_file(filename, n):

@@ -1,12 +1,11 @@
-import os, csv, random
-import torch, numpy as np
-from torch.utils.data import Dataset
+import os, csv, random, dgl, logging, torch, numpy as np
+from collections import defaultdict, OrderedDict, namedtuple
+from torch.utils.data import Dataset, Subset, DataLoader, RandomSampler
 from rdkit import Chem
-from collections import defaultdict, OrderedDict
-from torch.utils.data import DataLoader, RandomSampler
+from dgl.data.chem import smiles_to_bigraph, CanonicalBondFeaturizer, CanonicalAtomFeaturizer
 
 
-def _get_canonical_smiles(smiles):
+def _canonicalize_smiles(smiles):
     mol = Chem.MolFromSmiles(smiles)
     mol = Chem.RemoveHs(mol)
     for atom in mol.GetAtoms():
@@ -14,173 +13,152 @@ def _get_canonical_smiles(smiles):
     smiles = Chem.MolToSmiles(mol)
     return smiles
 
-def _random_augment(smiles):
-    """https://github.com/EBjerrum/SMILES-enumeration"""
-    if random.random() < 0.5:
-        m = Chem.MolFromSmiles(smiles)
-        ans = list(reversed(range(m.GetNumAtoms())))
-        nm = Chem.RenumberAtoms(m, ans)
-        return Chem.MolToSmiles(nm, canonical=False)
-    else:
-        return smiles
-
-def _random_strong_augment(smiles):
-    """https://github.com/EBjerrum/SMILES-enumeration"""
-    m = Chem.MolFromSmiles(smiles)
-    ans = list(range(m.GetNumAtoms()))
-    np.random.shuffle(ans)
-    nm = Chem.RenumberAtoms(m, ans)
-    return Chem.MolToSmiles(nm, canonical=False)
+def _tokenize_smiles(smiles):
+    pattern =  "(\[[^\]]+]|Br?|Cl?|N|O|S|P|F|I|b|c|n|o|s|p|\(|\)|\.|=|#|-|\+|\\\\|\/|:|~|@|\?|>|\*|\$|\%[0-9]{2}|[0-9])"
+    return list(re.compile(pattern).findall(text))
 
 
-class MoleculeSet(Dataset):
+Molecule = namedtuple('Molecule', 'smiles graph token_ids')
+class MoleculeDictionary(Dataset):
+    @staticmethod
+    def save(cachedir, smiles, known_indices):
+        atom_featurizer = CanonicalAtomFeaturizer(atom_data_field='x')
+        bond_featurizer = CanonicalBondFeaturizer(bond_data_field='w')
+        graphs = []
+        tokens = set()
+        for i, s in enumerate(smiles):
+            graphs.append(smiles_to_bigraph(s,
+                                            node_featurizer=atom_featurizer,
+                                            edge_featurizer=bond_featurizer))
+            tokens |= set(_tokenize_smiles(s))
+            print('{} / {}'.format(i+1, len(smiles)), end='\r', flush=True)
 
-    def __init__(self, molecules, augment=False):
-        _set = set()
-        for m in molecules:
-            _set |= set(m.split('.'))
-        self.molecules = sorted(list(_set))
-        self.mol2idx = { mol: i for i, mol in enumerate(self.molecules) }
-        self.augment = augment
+        tokens = tokens - set(['.'])
+        tokens = [(tok, i+4) for i, tok in enumerate(sorted(list(tokens)))]
+        vocab = OrderedDict([('<pad>', 0), ('<bos>', 1), ('<eos>', 2), ('<unk>', 3)] + tokens)
+
+        torch.save(vocab, 'vocab.pth')
+        dgl.data.utils.save_graphs(os.path.join(cachedir, 'mol_dict_graphs.bin'), graphs)
+        torch.save((smiles, known_indices), os.path.join(cachedir, 'mol_dict.pth'))
+
+    @staticmethod
+    def load(cachedir):
+        graphs, _ = dgl.data.utils.load_graphs(os.path.join(cachedir, 'mol_dict_graphs.bin'))
+        vocab = torch.load(os.path.join(cachedir, 'vocab.pth'))
+        smiles, known_indices = torch.load(os.path.join(cachedir, 'mol_dict.pth'))
+        return MoleculeDictionary(smiles, graphs, vocab), known_indices
+
+    def __init__(self, smiles, graphs, vocab):
+        self._smiles = smiles
+        self._graphs = graphs
+        self._vocab = vocab
+        self._smiles2idx = { s: i for i, s in enumerate(self._smiles) }
+
+    @property
+    def vocab_size(self):
+        return len(self._vocab)
+
+    @property
+    def atom_feat_size(self):
+        return self._graphs[0].ndata['x'].shape[1]
+
+    @property
+    def bond_feat_size(self):
+        return self._graphs[0].edata['w'].shape[1]
 
     def __len__(self):
-        return len(self.molecules)
+        return len(self._smiles)
 
     def __getitem__(self, idx):
-        if self.augment:
-            return _random_augment(self.molecules[idx])
-        else:
-            return self.molecules[idx]
+        if type(idx) is str:
+            idx = self._smiles2idx[idx]
 
-    def find(self, mol):
-        return self.mol2idx[mol]
+        smiles = self._smiles[idx]
+        graph  = self._graphs[idx]
+        tokens = ['<bos>'] + _tokenize_smiles(smeils) + ['<eos>']
+        token_ids = [self._vocab[t] for t in tokens]
 
-    def findall(self, mols):
-        return [self.find(mol) for mol in mols]
+        return Molecule(smiles=self._smiles[idx], graph=self._graphs[idx], token_ids=token_ids)
 
 
-class RetroSynthesisDataset(Dataset):
-
-    def __init__(self, reactants, products, labels, augment=False):
-        self.reactants = reactants
-        self.products = products
+Reaction = namedtuple('Reaction', 'reactants product label')
+class ReactionDataset(Dataset):
+    def __init__(self, reactants, products, labels, mol_dict):
+        self.reactants = [[mol_dict[r] for r in rs.split('.')] for rs in reactants]
+        self.products = [mol_dict[p] for p in products]
         self.labels = labels
-        self.augment = augment
-
-        assert len(self.reactants) == len(self.products)
-        if self.labels is not None:
-            assert len(self.labels) == len(self.products)
 
     def __getitem__(self, idx):
-        if self.labels is None:
-            if self.augment:
-                return _random_augment(self.reactants[idx]), _random_augment(self.products[idx])
-            else:
-                return self.reactants[idx], self.products[idx]
-        else:
-            if self.augment:
-                return _random_augment(self.reactants[idx]), _random_augment(self.products[idx]), self.labels[idx]
-            else:
-                return self.reactants[idx], self.products[idx], self.labels[idx]
+        return Reaction(product=self.products[idx],
+                        reactants=self.reactants[idx],
+                        label=self.labels[idx])
 
     def __len__(self):
         return len(self.products)
 
 
-class AugmentedMoleculeSet(Dataset):
-
-    def __init__(self, molset):
-        self.molset = molset
-
-    def __len__(self):
-        return len(self.molset)
-
-    def __getitem__(self, idx):
-        m = self.molset[idx]
-        m1 = _random_strong_augment(m)
-        m2 = _random_strong_augment(m)
-        return m1, m2
-
-
-def load_dataset(dataset, datadir, augment=False, num_reactants=None):
+def load_dataset(dataset, datadir):
+    logger = logging.getLogger('data')
+    logger.info('Loading datasets ...')
     if dataset == 'uspto50k':
 
-        def _load(split):
-            filename = os.path.join(datadir, 'raw_{}.csv'.format(split))
-            savefile = os.path.join('.cache', datadir, '{}.pth'.format(split))
-            os.makedirs(os.path.dirname(savefile), exist_ok=True)
-            if os.path.isfile(savefile):
-                return torch.load(savefile)
+        cachedir = os.path.join('.cache', datadir)
+        os.makedirs(cachedir, exist_ok=True)
 
-            reactants = []
-            products = []
-            labels = []
-            with open(filename) as f:
+        data = {}
+        for split in ['train', 'val', 'test']:
+            cachefile = os.path.join(cachedir, f'{split}.pth')
+            if os.path.isfile(cachefile):
+                data[split] = torch.load(cachefile)
+                continue
+
+            logger.info(f'- Canonicalize SMILES from raw data ({split} split) ...')
+            reactants, products, labels = [], [], []
+            with open(os.path.join(datadir, 'raw_{}.csv'.format(split))) as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     r, _, p = row['reactants>reagents>production'].split('>')
-                    reactants.append(_get_canonical_smiles(r))
-                    products.append(_get_canonical_smiles(p))
+                    reactants.append(_canonicalize_smiles(r))
+                    products.append(_canonicalize_smiles(p))
                     labels.append(int(row['class']))
+            torch.save((reactants, products, labels), cachefile)
+            data[split] = (reactants, products, labels)
 
-            torch.save((reactants, products, labels), savefile)
-            return reactants, products, labels
+        cachefile = os.path.join(cachedir, 'mol_dict.pth')
+        if not os.path.isfile(cachefile):
+            logger.info('- Construct DGL Graphs from SMILES ...')
+            smiles = []
+            for i in range(2):
+                for split in ['train', 'val', 'test']:
+                    new_smiles = set(sum([x.split('.') for x in data[split][i]], []))
+                    new_smiles = new_smiles - set(smiles)
+                    smiles += list(new_smiles)
+                    if i == 1 and split == 'train':
+                        known_indices = list(range(len(smiles)))
+            MoleculeDictionary.save(cachedir, smiles, known_indices)
+        mol_dict, known_indices = MoleculeDictionary.load(cachedir)
 
-        sets = {}
-        for split in ['train', 'val', 'test']:
-            sets[split] = RetroSynthesisDataset(*_load(split), augment=(augment and split == 'train'))
+        datasets = { split: ReactionDataset(*data[split], mol_dict) for split in ['train', 'val', 'test'] }
 
-        known_molecules = set(sets['train'].products)
-        train_molecules = set(sets['train'].products)
-        for split, data in sets.items():
-            for rs in data.reactants:
-                known_molecules |= set(rs.split('.'))
-                if split == 'train':
-                    train_molecules |= set(rs.split('.'))
-        sets['molset_train'] = MoleculeSet(train_molecules)
-        sets['molset'] = MoleculeSet(known_molecules)
-        sets['molset_valtest_r'] = MoleculeSet(sets['val'].reactants+sets['test'].reactants)
+        datasets['mol_dict'] = Subset(mol_dict, known_indices)
+        datasets['mol_dict_all'] = mol_dict
 
-        if num_reactants is not None:
-            for split in ['train', 'val', 'test']:
-                d = sets[split]
-                indices = [i for i in range(len(d)) if len(d[i][0].split('.')) == num_reactants]
-                d.products = [d.products[i] for i in indices]
-                d.reactants = [d.reactants[i] for i in indices]
-                d.labels = [d.labels[i] for i in indices]
+    logger.info('- # of reactions in train/val/test splits: {} / {} / {}'.format(len(datasets['train']),
+                                                                                 len(datasets['val']),
+                                                                                 len(datasets['test'])))
+    logger.info('- # of known/all molecules: {} / {}'.format(len(datasets['mol_dict']),
+                                                             len(datasets['mol_dict_all'])))
 
-        return sets
-
-
-class BatchSampler(torch.utils.data.Sampler):
-
-    def __init__(self, dataset, batch_size, num_iterations):
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.num_iterations = num_iterations
-
-    def __len__(self):
-        return self.num_iterations
-
-    def __iter__(self):
-        indices = []
-        for _ in range(self.num_iterations):
-            if len(indices) < self.batch_size:
-                indices = torch.randperm(len(self.dataset)).tolist()
-
-            yield indices[:self.batch_size]
-
-            indices = indices[self.batch_size:]
+    return datasets
 
 
-def build_dataloader(dataset, batch_size, num_iterations=None, replacement=False):
+def _collate(batch):
+    return batch
+
+def build_dataloader(dataset, batch_size, num_iterations=None):
     if num_iterations is None:
-        return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        return DataLoader(dataset, batch_size=batch_size, collate_fn=_collate, shuffle=False)
     else:
-        if not replacement:
-            return DataLoader(dataset, batch_size=batch_size,
-                              sampler=RandomSampler(dataset, replacement=True, num_samples=num_iterations*batch_size))
-        else:
-            return DataLoader(dataset,
-                              batch_sampler=BatchSampler(dataset, batch_size, num_iterations))
+        return DataLoader(dataset, batch_size=batch_size, collate_fn=_collate,
+                          sampler=RandomSampler(dataset, replacement=True, num_samples=num_iterations*batch_size))
 

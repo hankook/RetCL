@@ -3,24 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def masked_pooling(inputs, masks, mode='sum'):
-    # inputs: N x T x C
-    # masks:  N x T     (boolean)
-
-    masks = masks.unsqueeze(-1).float()
-    if mode == 'sum':
-        return inputs.mul(masks).sum(1)
-    elif mode == 'mean':
-        return inputs.mul(masks).mean(1)
-    else:
-        raise Exception('Unknown mode: {}'.format(mode))
-
-
-class Identity(nn.Module):
-    def forward(self, x, **kwargs):
-        return x
-
-
 class PositionalEncoding(nn.Module):
 
     def __init__(self, d_model, dropout=0.1, max_len=512):
@@ -119,7 +101,7 @@ class Model(nn.Module):
             if num_layers_per_branch > 0:
                 self.branches.append(nn.TransformerEncoder(layer, num_layers_per_branch))
             else:
-                self.branches.append(Identity())
+                self.branches.append(nn.Identity())
 
 
     def forward(self, inputs, masks, pooling=None):
@@ -246,57 +228,6 @@ class Decoder(nn.Module):
 
         return outputs.transpose(0, 1)
 
-class MaskedAttentionPooling(nn.Module):
-
-    def __init__(self,
-                 hidden_size=256,
-                 num_candidates=2,
-                 mode='basic'):
-        super(MaskedAttentionPooling, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_candidates = num_candidates
-        self.projection = nn.Linear(hidden_size, num_candidates)
-        self.mode = 'basic'
-
-    def forward(self, inputs, masks):
-        """
-        inputs: N x T x d
-        masks:  N x T
-
-        return: N x C x d
-        """
-        scores = self.projection(inputs)
-        if self.mode == 'sqrt':
-            scores = scores.div(self.hidden_size ** 0.5)
-        scores = scores.masked_fill(~masks.unsqueeze(2), float('-inf')).softmax(1)
-        scores = scores.unsqueeze(3)
-        inputs = inputs.unsqueeze(2)
-        return inputs.mul(scores).sum(1)
-
-class AttentionScoreFunction(nn.Module):
-    def __init__(self, mode='basic'):
-        super(AttentionScoreFunction, self).__init__()
-        self.mode = mode
-
-    def forward(self, keys, queries):
-        """
-        keys:    N x C x d
-        queries: M x d
-        """
-
-        N, C, d = keys.shape
-        M, d = queries.shape
-
-        scores = keys.view(N*C, d).matmul(queries.t()).view(N, C, M)
-        if self.mode == 'sqrt':
-            scores = scores.div(d ** 0.5)
-        weights = scores.softmax(1)
-        weighted_keys = keys.unsqueeze(2).mul(weights.unsqueeze(3)).sum(1) # N x M x d
-
-        weighted_keys = F.normalize(weighted_keys, dim=-1)
-        queries = F.normalize(queries, dim=-1)
-        return weighted_keys.mul(queries.unsqueeze(0)).sum(2) # N x M
-
 def load_embedding(**kwargs):
     return nn.Sequential(nn.Embedding(kwargs['vocab_size'], kwargs['hidden_size']),
                          PositionalEncoding(kwargs['hidden_size']))
@@ -311,4 +242,5 @@ def load_encoder(**kwargs):
 
     return nn.TransformerEncoder(encoder_layer,
                                  kwargs['num_hidden_layers'])
+
 

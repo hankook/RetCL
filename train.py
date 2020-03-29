@@ -1,11 +1,15 @@
-import torch, os, argparse, logging, utils, math, random
-from datasets import load_dataset, build_dataloader
-from models import Model
-from utils import SMILESTokenizer
+import os, argparse, logging, math, random, copy, time
+
+import torch, dgl
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+
+import utils
+from datasets import load_dataset, build_dataloader
+from models import Structure2Vec, MultiAttentionQuery, AttentionSimilarity
+from models import masked_pooling, pad_sequence
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
@@ -22,82 +26,82 @@ def main(args):
     summary_writer = SummaryWriter(args.logdir)
 
     ### DATASETS
-    logger.info('Loading datasets ...')
-    datasets = load_dataset(args.dataset, args.datadir, augment=args.augment)
-    logger.info('- # of reactions in train/val/test splits: {} / {} / {}'.format(len(datasets['train']),
-                                                                                 len(datasets['val']),
-                                                                                 len(datasets['test'])))
-    logger.info('- # of train molecules: {}'.format(len(datasets['molset_train'])))
-    logger.info('- # of known molecules: {}'.format(len(datasets['molset'])))
+    datasets = load_dataset(args.dataset, args.datadir, data_type='graph')
 
-    trainloaders = {
-        'train':     build_dataloader(datasets['train'], batch_size=args.batch_size,
-                                      num_iterations=args.num_iterations),
-        'molecules': build_dataloader(datasets['molset'], batch_size=args.batch_size,
-                                      num_iterations=args.num_iterations),
-    }
-    testloaders = {
-        'val':       build_dataloader(datasets['val'],    batch_size=args.batch_size),
-        'test':      build_dataloader(datasets['test'],   batch_size=args.batch_size),
-        'molecules': build_dataloader(datasets['molset'], batch_size=args.batch_size),
-    }
-
-    ### TOKENIZER
-    tokenizer = SMILESTokenizer(os.path.join('.cache', 'data', args.dataset, 'vocab.pth'))
+    ### DATALOADERS
+    trainloader = build_dataloader(datasets['train'],    batch_size=args.batch_size, num_iterations=args.num_iterations)
+    valloader   = build_dataloader(datasets['val'],      batch_size=args.batch_size)
+    testloader  = build_dataloader(datasets['test'],     batch_size=args.batch_size)
+    molloader   = build_dataloader(datasets['mol_dict'], batch_size=args.batch_size)
 
     ### MODELS
     logger.info('Loading model ...')
-    model = Model(vocab_size=tokenizer.vocab_size,
-                  hidden_size=256,
-                  num_attention_heads=8,
-                  intermediate_size=2048,
-                  num_base_layers=4,
-                  num_layers_per_branch=1,
-                  num_branches=2).to(device)
+    encoder = Structure2Vec(num_layers=5,
+                            num_hidden_features=256,
+                            num_atom_features=datasets['mol_dict'].atom_feat_size,
+                            num_bond_features=datasets['mol_dict'].bond_feat_size).to(device)
 
-    model = nn.DataParallel(model)
+    K = args.K
+    query_func_o = MultiAttentionQuery(256, K).to(device)
+    query_func_r = MultiAttentionQuery(256, K).to(device)
+    score_fn = AttentionSimilarity()
 
     models = nn.ModuleDict({
-        'model': model,
+        'encoder': encoder,
+        'query_func_o': query_func_o,
+        'query_func_r': query_func_r,
     })
     logger.info('- # of parameters: {}'.format(sum(p.numel() for p in models.parameters())))
-    optimizer = optim.AdamW(models.parameters(), lr=args.lr)
+    optimizer = optim.Adam(models.parameters(), lr=args.lr, weight_decay=args.wd)
 
     iteration = 0
-    for reactants, products, labels in trainloaders['train']:
+    for reactions in trainloaders['train']:
         iteration += 1
         models.train()
 
         # preprocessing
-        products = list(products)
-        reactants = [random.choice(r.split('.')) for r in reactants]
+        products = [r.product.graph for r in reactions]
+        reactants = [random.choice(r.reactants).graph for r in reactions]
 
-        B = len(products)
-        # M = len(reactants)
+        N = len(products)
+        graphs = products+reactants
+        batch = dgl.batch(graphs).to(device)
 
         # compute features
-        _, prod_features, reac_features = model(
-                *tokenizer.encode(products+reactants, token_dropout=args.token_dropout, device=device),
-                pooling='mean')
-        prod_features = F.normalize(prod_features)
-        reac_features = F.normalize(reac_features)
+        features = encoder(batch)
+        features = torch.split(features, batch.batch_num_nodes)
+        features, masks = pad_sequence(features)
+        keys = masked_pooling(features, masks, mode='mean')
 
-        scores = torch.matmul(prod_features[:B], reac_features.t()).div(args.tau)
-        scores = torch.stack([torch.cat([row[:i], row[i+1:]], 0) for i, row in enumerate(scores)], 0)
-        labels = torch.arange(B-1, 2*B-1).to(device)
-        loss = F.cross_entropy(scores, labels).mul(0.5)
+        loss = 0.
 
+        # maximize p(r|o)
+        queries = query_func_o(features[:N], masks[:N])
+        scores = score_fn(queries, keys).div(args.tau)
+        score_masks = torch.ones_like(scores, dtype=torch.bool)
+        for i in range(N):
+            score_masks[i, i] = 0
+        scores = scores[score_masks].view(N, -1)
+        labels = torch.arange(N-1, 2*N-1).to(device)
+        loss += F.cross_entropy(scores, labels) / 2.
         with torch.no_grad():
-            acc = (scores[:B].argmax(1) == labels).float().mean().item()
+            acc = (scores.argmax(1) == labels).float().mean().item()
 
-        scores = torch.matmul(reac_features[B:], prod_features.t()).div(args.tau)
-        scores = torch.stack([torch.cat([row[:B+i], row[B+i+1:]], 0) for i, row in enumerate(scores)], 0)
-        labels = torch.arange(B).to(device)
-        loss += F.cross_entropy(scores, labels).mul(0.5)
+        # maximize p(o|r)
+        queries = query_func_r(features[N:], masks[N:])
+        scores = score_fn(queries, keys).div(args.tau)
+        score_masks = torch.ones_like(scores, dtype=torch.bool)
+        for i in range(N):
+            score_masks[i, N+i] = 0
+        scores = scores[score_masks].view(N, -1)
+        labels = torch.arange(N).to(device)
+        loss += F.cross_entropy(scores, labels) / 2.
 
 
         optimizer.zero_grad()
         loss.backward()
+        if args.clip is not None:
+            nn.utils.clip_grad_norm_(models.parameters(), args.clip)
         optimizer.step()
 
 
@@ -108,34 +112,64 @@ def main(args):
 
         if iteration % args.eval_freq == 0:
             models.eval()
-            candidate_features = []
+            r_keys = []
+            r_queries = []
             with torch.no_grad():
-                for molecules in testloaders['molecules']:
-                    _, _, features = model(
-                            *tokenizer.encode(molecules, device=device),
-                            pooling='mean')
-                    candidate_features.append(features.detach())
-                candidate_features = torch.cat(candidate_features, 0)
-                normalized_candidate_features = F.normalize(candidate_features)
+                for molecules in molloader:
+                    batch = dgl.batch([m.graph for m in molecules]).to(device)
+                    features = encoder(batch)
+                    features = torch.split(features, batch.batch_num_nodes)
+                    features, masks = pad_sequence(features)
 
-                corrects = []
-                for reactants, products, labels in testloaders['test']:
-                    _, product_features, _ = model(
-                            *tokenizer.encode(products, device=device),
-                            pooling='mean')
-                    product_features = F.normalize(product_features)
-                    scores = product_features.matmul(normalized_candidate_features.t())
-                    indices = scores.argmax(1)
+                    r_keys.append(masked_pooling(features, masks, mode='mean').detach())
+                    r_queries.append(query_func_r(features, masks).detach())
 
-                    for i, r in enumerate(reactants):
-                        if datasets['molset'][indices[i].item()] in r.split('.'):
-                            corrects.append(1)
-                        else:
-                            corrects.append(0)
+                r_keys = torch.cat(r_keys, 0)
+                r_queries = torch.cat(r_queries, 0)
 
-            acc = sum(corrects) / len(corrects)
-            logger.info('[Iter {}] [Top1 Acc {:.4f}]'.format(iteration, acc))
-            summary_writer.add_scalar('eval/acc', acc, iteration)
+                num_corrects = [0] * 5
+                for reactions in testloader:
+                    N = len(reactions)
+                    batch = dgl.batch([r.product.graph for r in reactions]).to(device)
+                    features = encoder(batch)
+                    features = torch.split(features, batch.batch_num_nodes)
+                    features, masks = pad_sequence(features)
+
+                    o_queries = query_func_o(features, masks).detach()
+                    o_keys = masked_pooling(features, masks, mode='mean').detach()
+
+                    scores = []
+                    b = 512 // (args.batch_size // 64)
+                    for i in range(0, r_keys.shape[0], b):
+                        scores.append(score_fn(o_queries, r_keys[i:i+b]))
+                    scores = torch.cat(scores, 1)
+                    scores, indices = scores.topk(args.beam, dim=1)
+
+                    reverse_scores = score_fn(r_queries[indices.view(-1)],
+                                              o_keys.repeat_interleave(5, dim=0),
+                                              False).view(-1, args.beam)
+
+                    total_scores = scores + reverse_scores
+                    _, indices2 = total_scores.topk(5, dim=1)
+
+                    for i, rs in enumerate(reactants):
+                        smiles = [r.smiles for r in rs]
+                        correct = 0
+                        for j in range(5):
+                            k = indices2[i, j].item()
+                            k = indices[i, k].item()
+                            if datasets['molset'][k].smiles in smiles:
+                                correct += 1
+
+                            if correct > 0:
+                                num_corrects[j] += 1
+
+                num_corrects = [c / len(datasets['test']) for c in num_corrects]
+
+
+            logger.info('[Iter {}] [Top Acc {:.4f} {:.4f} {:.4f} {:.4f} {:.4f}]'.format(
+                iteration, *num_corrects))
+            summary_writer.add_scalar('eval/acc', num_corrects[0], iteration)
 
 
         if iteration % args.save_freq == 0:
@@ -150,18 +184,20 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, required=True)
-    parser.add_argument('--datadir', type=str, default='data/typed_schneider50k')
+    parser.add_argument('--datadir', type=str, default='data/uspto50k_coley')
     parser.add_argument('--dataset', type=str, default='uspto50k')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
-    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=2e-4)
     parser.add_argument('--wd', type=float, default=0)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
     parser.add_argument('--save-freq', type=int, default=10000)
-    parser.add_argument('--augment', action='store_true')
-    parser.add_argument('--token-dropout', type=float, default=0)
+    parser.add_argument('--K', type=int, default=16)
+    parser.add_argument('--clip', type=float, default=None)
+    praser.add_argument('--beam', type=int, default=5)
     args = parser.parse_args()
 
     main(args)
+
 
