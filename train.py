@@ -48,7 +48,7 @@ def main(args):
         loss_fn = SimCLR(score_fn, args.tau).to(device)
 
     logger.info('- # of parameters: {}'.format(sum(p.numel() for p in module.parameters())))
-    optimizer = optim.Adam(module.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = optim.AdamW(module.parameters(), lr=args.lr, weight_decay=args.wd)
 
     iteration = 0
     for reactions in trainloader:
