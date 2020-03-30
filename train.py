@@ -176,7 +176,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
     parser.add_argument('--lr', type=float, default=2e-4)
-    parser.add_argument('--wd', type=float, default=0)
+    parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
     parser.add_argument('--save-freq', type=int, default=10000)
