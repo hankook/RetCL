@@ -11,7 +11,7 @@ class MultiAttentionQuery(nn.Module):
         self.hidden_size = hidden_size
         self.num_candidates = num_candidates
         self.projection = nn.Linear(hidden_size, num_candidates)
-        self.mode = 'basic'
+        self.mode = mode
 
     def forward(self, inputs, masks):
         """
@@ -47,6 +47,7 @@ class AttentionSimilarity:
 
         scores = torch.bmm(queries, keys.unsqueeze(-1))
         if self.mode == 'sqrt':
+            d = queries.shape[2]
             scores = scores.div(d ** 0.5)
         weights = scores.softmax(1)
         weighted_queries = queries.mul(weights).sum(1)

@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 import utils
 from datasets import load_dataset, build_dataloader
 from models import Structure2Vec, MultiAttentionQuery, AttentionSimilarity, GraphModule, SimCLR, MoCo
-from models import masked_pooling, pad_sequence
+from models import masked_pooling, pad_sequence, graph_parallel
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
@@ -46,9 +46,17 @@ def main(args):
     ### LOSS
     if args.contrast == 'simclr':
         loss_fn = SimCLR(score_fn, args.tau).to(device)
+    else:
+        loss_fn = MoCo(score_fn, args.tau, args.moco_queue, 256).to(device)
+        momentum_module = copy.deepcopy(module)
 
     logger.info('- # of parameters: {}'.format(sum(p.numel() for p in module.parameters())))
-    optimizer = optim.AdamW(module.parameters(), lr=args.lr, weight_decay=args.wd)
+    if args.optimizer == 'adam':
+        optimizer = optim.Adam(module.parameters(), lr=args.lr, weight_decay=args.wd)
+    elif args.optimizer == 'adamw':
+        optimizer = optim.AdamW(module.parameters(), lr=args.lr, weight_decay=args.wd)
+    else:
+        optimizer = optim.SGD(module.parameters(), lr=args.lr, weight_decay=args.wd, momentum=0.9)
 
     iteration = 0
     for reactions in trainloader:
@@ -64,7 +72,12 @@ def main(args):
         batch = dgl.batch(graphs).to(device)
 
         # compute features
-        keys, p_queries, r_queries = module(batch)
+        keys, p_queries, r_queries = graph_parallel(module, batch)
+        if args.contrast == 'moco':
+            with torch.no_grad():
+                for momentum_param, param in zip(momentum_module.parameters(), module.parameters()):
+                    momentum_param.data.mul_(args.moco_momentum).add_(1-args.moco_momentum, param.data)
+                keys, _, _ = graph_parallel(momentum_module, batch)
 
         loss = 0.
 
@@ -124,7 +137,7 @@ def evaluate(module, score_fn, dataset, mol_dict, beam=5, topk=5, batch_size=64)
         r_queries = []
         for molecules in molloader:
             batch = dgl.batch([m.graph for m in molecules]).to(device)
-            keys, _, queries = module(batch)
+            keys, _, queries = graph_parallel(module, batch)
 
             r_keys.append(keys.detach())
             r_queries.append(queries.detach())
@@ -136,7 +149,7 @@ def evaluate(module, score_fn, dataset, mol_dict, beam=5, topk=5, batch_size=64)
         for reactions in dataloader:
             N = len(reactions)
             batch = dgl.batch([r.product.graph for r in reactions]).to(device)
-            p_keys, p_queries, _ = module(batch)
+            p_keys, p_queries, _ = graph_parallel(module, batch)
 
             scores = []
             b = 512 // (batch_size // 64)
@@ -184,6 +197,10 @@ if __name__ == '__main__':
     parser.add_argument('--clip', type=float, default=None)
     parser.add_argument('--beam', type=int, default=5)
     parser.add_argument('--contrast', type=str, default='simclr', choices=['simclr', 'moco'])
+    parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'])
+    parser.add_argument('--attn-mode', type=str, default='basic', choices=['basic', 'sqrt'])
+    parser.add_argument('--moco-queue', type=int, default=1024)
+    parser.add_argument('--moco-momentum', type=float, default=0.999)
     args = parser.parse_args()
 
     main(args)
