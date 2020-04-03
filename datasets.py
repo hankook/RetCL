@@ -19,6 +19,7 @@ def _tokenize_smiles(smiles):
 
 
 Molecule = namedtuple('Molecule', 'smiles graph token_ids')
+Molecule.__hash__ = lambda x: x.smiles.__hash__()
 class MoleculeDictionary(Dataset):
     @staticmethod
     def save(cachedir, smiles, known_indices):

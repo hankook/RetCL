@@ -5,6 +5,10 @@ from rdkit import Chem
 import dgl
 
 
+def shuffle(x):
+    return random.sample(x, len(x))
+
+
 def set_logging_options(logdir):
     logging.basicConfig(format="[%(asctime)s - %(filename)s] %(message)s",
                         level=logging.INFO,

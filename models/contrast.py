@@ -1,6 +1,7 @@
 import torch, math
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_scatter import scatter_logsumexp
 
 class SimCLR(nn.Module):
     def __init__(self, score_fn, temperature):
@@ -20,6 +21,34 @@ class SimCLR(nn.Module):
 
     def update(self, keys):
         pass
+
+
+class SimCLRv2(nn.Module):
+    def __init__(self, score_fn, temperature):
+        super(SimCLRv2, self).__init__()
+        self.score_fn = score_fn
+        self.temperature = temperature
+
+    def forward(self, queries, keys, positive_indices, ignore_indices):
+        N = queries.shape[0]
+        scores = self.score_fn(queries, keys).div(self.temperature)
+        indices = torch.zeros_like(scores, dtype=torch.long)
+        positive_masks = torch.zeros_like(scores, dtype=torch.bool)
+        ignore_masks = torch.zeros_like(scores, dtype=torch.bool)
+        for i in range(N):
+            indices[i, :] = i
+            for j in positive_indices[i]:
+                positive_masks[i, j] = True
+            for j in ignore_indices[i]:
+                ignore_masks[i, j] = True
+        scores = scores.masked_fill(ignore_masks, float('-inf'))
+        logp = scatter_logsumexp(scores[positive_masks], indices[positive_masks]) - scores.logsumexp(1)
+        loss = logp.mul(-1).sum()
+
+        preds = scores.argmax(1).tolist()
+        corrects = [p in positive_indices[i] for i, p in enumerate(preds)]
+        return loss, corrects
+
 
 class MoCo(nn.Module):
     def __init__(self, score_fn, temperature, queue_size, num_hidden_features):
