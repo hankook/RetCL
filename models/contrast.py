@@ -1,7 +1,7 @@
 import torch, math
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_scatter import scatter_logsumexp
+# from torch_scatter import scatter_logsumexp
 
 class SimCLR(nn.Module):
     def __init__(self, score_fn, temperature):

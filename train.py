@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import utils
 from datasets import load_dataset, build_dataloader
-from models import Structure2Vec, MultiAttentionQuery, AttentionSimilarity, GraphModule, SimCLR, MoCo
+from models import Structure2Vec, MultiAttentionQuery, AttentionSimilarity, GraphModule, SimCLR
 from models import masked_pooling, pad_sequence, graph_parallel
 
 torch.backends.cudnn.benchmark = True
@@ -44,11 +44,7 @@ def main(args):
     score_fn = AttentionSimilarity()
 
     ### LOSS
-    if args.contrast == 'simclr':
-        loss_fn = SimCLR(score_fn, args.tau).to(device)
-    else:
-        loss_fn = MoCo(score_fn, args.tau, args.moco_queue, 256).to(device)
-        momentum_module = copy.deepcopy(module)
+    loss_fn = SimCLR(score_fn, args.tau).to(device)
 
     logger.info('- # of parameters: {}'.format(sum(p.numel() for p in module.parameters())))
     if args.optimizer == 'adam':
@@ -73,11 +69,6 @@ def main(args):
 
         # compute features
         keys, p_queries, r_queries = graph_parallel(module, batch)
-        if args.contrast == 'moco':
-            with torch.no_grad():
-                for momentum_param, param in zip(momentum_module.parameters(), module.parameters()):
-                    momentum_param.data.mul_(args.moco_momentum).add_(1-args.moco_momentum, param.data)
-                keys, _, _ = graph_parallel(momentum_module, batch)
 
         loss = 0.
 
@@ -188,19 +179,15 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='uspto50k')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
-    parser.add_argument('--lr', type=float, default=2e-4)
-    parser.add_argument('--wd', type=float, default=1e-4)
+    parser.add_argument('--lr', type=float, default=1e-2)
+    parser.add_argument('--wd', type=float, default=1e-5)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
     parser.add_argument('--save-freq', type=int, default=10000)
-    parser.add_argument('--K', type=int, default=16)
+    parser.add_argument('--K', type=int, default=2)
     parser.add_argument('--clip', type=float, default=None)
     parser.add_argument('--beam', type=int, default=5)
-    parser.add_argument('--contrast', type=str, default='simclr', choices=['simclr', 'moco'])
-    parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'adamw', 'sgd'])
-    parser.add_argument('--attn-mode', type=str, default='basic', choices=['basic', 'sqrt'])
-    parser.add_argument('--moco-queue', type=int, default=1024)
-    parser.add_argument('--moco-momentum', type=float, default=0.999)
+    parser.add_argument('--optimizer', type=str, default='sgd', choices=['adam', 'adamw', 'sgd'])
     args = parser.parse_args()
 
     main(args)
