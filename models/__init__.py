@@ -10,11 +10,10 @@ from .contrast import *
 
 
 class GraphModule(nn.Module):
-    def __init__(self, encoder, prod_query_fn, reac_query_fn):
+    def __init__(self, encoder, *query_fn):
         super(GraphModule, self).__init__()
         self.encoder = encoder
-        self.prod_query_fn = prod_query_fn
-        self.reac_query_fn = reac_query_fn
+        self.query_fn = nn.ModuleList(query_fn)
 
     def forward(self, batch):
         features = self.encoder(batch)
@@ -22,9 +21,9 @@ class GraphModule(nn.Module):
         features, masks = pad_sequence(features)
         keys = masked_pooling(features, masks, mode='mean')
 
-        prod_queries = self.prod_query_fn(features, masks)
-        reac_queries = self.reac_query_fn(features, masks)
-        return keys, prod_queries, reac_queries
+        queries = [fn(features, masks) for fn in self.query_fn]
+        return [keys] + queries
+
 
 def graph_parallel(module, batch):
     device_ids = list(range(torch.cuda.device_count()))

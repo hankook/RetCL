@@ -1,7 +1,7 @@
 import torch, math
 import torch.nn as nn
 import torch.nn.functional as F
-# from torch_scatter import scatter_logsumexp
+
 
 class SimCLR(nn.Module):
     def __init__(self, score_fn, temperature):
@@ -29,24 +29,70 @@ class SimCLRv2(nn.Module):
         self.score_fn = score_fn
         self.temperature = temperature
 
-    def forward(self, queries, keys, positive_indices, ignore_indices):
-        N = queries.shape[0]
-        scores = self.score_fn(queries, keys).div(self.temperature)
-        indices = torch.zeros_like(scores, dtype=torch.long)
-        positive_masks = torch.zeros_like(scores, dtype=torch.bool)
-        ignore_masks = torch.zeros_like(scores, dtype=torch.bool)
-        for i in range(N):
-            indices[i, :] = i
-            for j in positive_indices[i]:
-                positive_masks[i, j] = True
-            for j in ignore_indices[i]:
-                ignore_masks[i, j] = True
-        scores = scores.masked_fill(ignore_masks, float('-inf'))
-        logp = scatter_logsumexp(scores[positive_masks], indices[positive_masks]) - scores.logsumexp(1)
-        loss = logp.mul(-1).sum()
+    def generate_masks(self, inputs, indices, value):
+        masks = torch.full_like(inputs, not value, dtype=torch.bool)
+        for i, row in enumerate(indices):
+            row = [row] if type(row) is int else row
+            for j in row:
+                masks[i, j] = value
+        return masks
 
-        preds = scores.argmax(1).tolist()
-        corrects = [p in positive_indices[i] for i, p in enumerate(preds)]
+    def forward(self, queries, keys, positive_indices, ignore_indices):
+        """
+        queries: N x ...
+        keys:    M x ...
+        positive_indices: a list (length N) of (integers or lists of integers)
+        ignore_indices:   a list (length N) of (integers or lists of integers)
+        """
+        N = queries.shape[0]
+        M = keys.shape[0]
+        scores = self.score_fn(queries, keys).div(self.temperature)
+        positive_masks = self.generate_masks(scores, positive_indices, True)
+        negative_masks = self.generate_masks(scores, ignore_indices, False)
+        positive_scores = scores.masked_fill(~positive_masks, float('-inf'))
+        negative_scores = scores.masked_fill(~negative_masks, float('-inf'))
+        loss = negative_scores.logsumexp(1) - positive_scores.logsumexp(1)
+        with torch.no_grad():
+            preds = negative_scores.argmax(1)
+            corrects = (F.one_hot(preds, num_classes=M).bool() & positive_masks).any(1)
+        return loss, corrects
+
+
+class SimCLRv3(nn.Module):
+    def __init__(self, score_fn, temperature):
+        super(SimCLRv2, self).__init__()
+        self.score_fn = score_fn
+        self.temperature = temperature
+
+    def generate_masks(self, inputs, indices, value):
+        masks = torch.full_like(inputs, not value, dtype=torch.bool)
+        for i, row in enumerate(indices):
+            row = [row] if type(row) is int else row
+            for j in row:
+                masks[i, j] = value
+        return masks
+
+    def forward(self, queries, keys, positive_indices, ignore_indices):
+        """
+        queries: N x ...
+        keys:    M x ...
+        positive_indices:
+        ignore_indices:
+        """
+        N = queries.shape[0]
+        M = keys.shape[0]
+        scores = self.score_fn(queries, keys).div(self.temperature)
+        positive_masks = self.generate_masks(scores, positive_indices, True)
+        negative_masks = self.generate_masks(scores, ignore_indices, False)
+        positive_1st = positive_masks.nonzero()[:, 0]
+        positive_2nd = positive_masks.nonzero()[:, 1]
+
+        positive_scores = scores[positive_masks]
+        negative_scores = scores.maksed_fill(~negative_masks, float('-inf'))
+        loss = negative_scores.logsumexp(1)[positive_1st] - positive_scoers
+        with torch.no_grad():
+            preds = negative_scores.argmax(1)
+            corrects = preds[positive_1st] == positive_2nd
         return loss, corrects
 
 
