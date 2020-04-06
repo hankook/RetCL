@@ -58,44 +58,6 @@ class SimCLRv2(nn.Module):
         return loss, corrects
 
 
-class SimCLRv3(nn.Module):
-    def __init__(self, score_fn, temperature):
-        super(SimCLRv2, self).__init__()
-        self.score_fn = score_fn
-        self.temperature = temperature
-
-    def generate_masks(self, inputs, indices, value):
-        masks = torch.full_like(inputs, not value, dtype=torch.bool)
-        for i, row in enumerate(indices):
-            row = [row] if type(row) is int else row
-            for j in row:
-                masks[i, j] = value
-        return masks
-
-    def forward(self, queries, keys, positive_indices, ignore_indices):
-        """
-        queries: N x ...
-        keys:    M x ...
-        positive_indices:
-        ignore_indices:
-        """
-        N = queries.shape[0]
-        M = keys.shape[0]
-        scores = self.score_fn(queries, keys).div(self.temperature)
-        positive_masks = self.generate_masks(scores, positive_indices, True)
-        negative_masks = self.generate_masks(scores, ignore_indices, False)
-        positive_1st = positive_masks.nonzero()[:, 0]
-        positive_2nd = positive_masks.nonzero()[:, 1]
-
-        positive_scores = scores[positive_masks]
-        negative_scores = scores.maksed_fill(~negative_masks, float('-inf'))
-        loss = negative_scores.logsumexp(1)[positive_1st] - positive_scoers
-        with torch.no_grad():
-            preds = negative_scores.argmax(1)
-            corrects = preds[positive_1st] == positive_2nd
-        return loss, corrects
-
-
 class MoCo(nn.Module):
     def __init__(self, score_fn, temperature, queue_size, num_hidden_features):
         super(MoCo, self).__init__()
