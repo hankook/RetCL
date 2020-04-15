@@ -40,6 +40,7 @@ def main(args):
     module = GraphModule(encoder,
                          MultiAttentionQuery(256, args.K),
                          MultiAttentionQuery(256, args.K)).to(device)
+    module.halt_keys = nn.Parameter(torch.randn(1, 256).to(device))
     score_fn = AttentionSimilarity()
 
     ### LOSS
@@ -72,47 +73,49 @@ def main(args):
 
         p_indices = []
         r_indices = []
+        num_reactants = []
         for reaction in reactions:
             p_indices.append(batch_molecules[reaction.product])
             r_indices.append([batch_molecules[r] for r in reaction.reactants])
-        
+            num_reactants.append(len(reaction.reactants))
+
         # compute features
         batch = dgl.batch(graphs).to(device)
         keys, p_queries, r_queries = module(batch)
 
-        losses = []
-
         # forward prediction P(product | reactant)
         queries = [r_queries[r_indices[i]].sum(0) for i in range(N)]
         queries = torch.stack(queries, 0)
-        losses.append(loss_fn(queries, keys, p_indices, r_indices))
+        f_loss, f_corrects = loss_fn(queries, keys, p_indices, r_indices)
 
         # backward prediction P(reactant | product)
-        losses.append(loss_fn(p_queries[p_indices], keys, r_indices, p_indices))
-        for n in range(1, 3):
-            indices = []
-            positive_indices = []
-            given_indices = []
-            for i in range(N):
-                if len(r_indices[i]) <= n:
-                    continue
+        keys = torch.cat([keys, module.halt_keys], 0)
+        queries = []
+        labels = []
+        ignore_indices = []
+        lengths = []
+        for i, n in enumerate(num_reactants):
+            lengths.append(math.factorial(n)*(n+1))
+            for perm in itertools.permutations(r_indices[i]):
+                perm = perm + (keys.shape[0]-1, )
+                queries.append(p_queries[p_indices[i]])
+                labels.append(perm[0])
+                ignore_indices.append(p_indices[i])
+                for j in range(n):
+                    queries.append(queries[-1]-r_queries[perm[j]])
+                    labels.append(perm[j+1])
+                    ignore_indices.append(p_indices[i])
+        queries = torch.stack(queries, 0)
 
-                for comb in itertools.combinations(r_indices[i], n):
-                    indices.append(p_indices[i])
-                    given_indices.append(comb)
-                    positive_indices.append(list(set(r_indices[i]) - set(comb)))
+        b_loss, b_corrects = [torch.split(x, lengths) for x in loss_fn(queries, keys, labels, ignore_indices)]
+        if not args.min:
+            b_loss = torch.stack([x.view(-1, n+1).sum(1).mul(-1).logsumexp(0).mul(-1) for n, x in zip(num_reactants, b_loss)])
+        else:
+            b_loss = torch.stack([x.view(-1, n+1).sum(1).min(0)[0] for n, x in zip(num_reactants, b_loss)])
+        b_corrects = torch.stack([x.view(-1, n+1).all(1).any(0) for n, x in zip(num_reactants, b_corrects)])
 
-            if len(indices) == 0:
-                continue
-
-            given_indices = torch.tensor(given_indices).t()
-            queries = p_queries[indices]
-            queries -= torch.stack([r_queries[x] for x in given_indices], 0).sum(0)
-            losses.append(loss_fn(queries, keys, positive_indices, indices))
-
-        losses, corrects = list(zip(*losses))
-        loss = torch.cat(losses).mean()
-        acc = torch.cat(corrects).float().mean().item()
+        loss = (f_loss + b_loss).mean()
+        acc = (f_corrects & b_corrects).float().mean().item()
 
         # optimize
         optimizer.zero_grad()
@@ -159,6 +162,9 @@ def evaluate(module, score_fn, dataset, mol_dict, batch_size=64):
             r_keys.append(keys.detach())
             r_queries.append(queries.detach())
 
+        r_keys.append(module.halt_keys)
+        r_queries.append(torch.zeros(1, *r_queries[-1].shape[1:]).to(device))
+
         r_keys = torch.cat(r_keys, 0).detach()
         r_queries = torch.cat(r_queries, 0).detach()
 
@@ -175,15 +181,20 @@ def evaluate(module, score_fn, dataset, mol_dict, batch_size=64):
             scores = torch.cat([score_fn(p_queries, k).detach() for k in r_keys.split(512)], dim=1)
             indices2 = scores.argmax(1)
 
+            p_queries = p_queries - r_queries[indices2]
+            scores = torch.cat([score_fn(p_queries, k).detach() for k in r_keys.split(512)], dim=1)
+            indices3 = scores.argmax(1)
+
             for i, r in enumerate(reactions):
-                a = mol_dict[indices1[i].item()]
-                b = mol_dict[indices2[i].item()]
-                if len(r.reactants) == 1:
-                    if a == r.reactants[0]:
-                        num_corrects += 1
-                elif len(r.reactants) == 2:
-                    if set([a, b]) == set(r.reactants):
-                        num_corrects += 1
+                if indices2[i].item() == r_keys.shape[0]-1:
+                    pred = [indices1[i].item()]
+                elif indices3[i].item() == r_keys.shape[0]-1:
+                    pred = [indices1[i].item(), indices2[i].item()]
+                else:
+                    pred = [indices1[i].item(), indices2[i].item(), indices3[i].item()]
+                pred = set([mol_dict[x] for x in pred])
+                if pred == set(r.reactants):
+                    num_corrects += 1
 
     return num_corrects / len(dataset)
 
@@ -203,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--K', type=int, default=2)
     parser.add_argument('--clip', type=float, default=None)
     parser.add_argument('--optimizer', type=str, default='sgd', choices=['adam', 'adamw', 'sgd'])
+    parser.add_argument('--min', action='store_true')
     args = parser.parse_args()
 
     main(args)
