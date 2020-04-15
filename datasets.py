@@ -144,6 +144,13 @@ def load_dataset(dataset, datadir):
         datasets['known_mol_dict'] = Subset(mol_dict, known_indices)
         datasets['mol_dict'] = mol_dict
 
+        test_indices = set()
+        for i in range(len(datasets['test'])):
+            for m in datasets['test'][i].reactants:
+                test_indices.add(mol_dict._smiles2idx[m.smiles])
+        test_indices = sorted(list(test_indices))
+        datasets['test_mol_dict'] = Subset(mol_dict, test_indices)
+
     logger.info('- # of reactions in train/val/test splits: {} / {} / {}'.format(len(datasets['train']),
                                                                                  len(datasets['val']),
                                                                                  len(datasets['test'])))
