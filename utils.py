@@ -10,7 +10,7 @@ def shuffle(x):
 
 
 def set_logging_options(logdir):
-    logging.basicConfig(format="[%(asctime)s - %(filename)s] %(message)s",
+    logging.basicConfig(format="[%(asctime)s - %(name)s] %(message)s",
                         level=logging.INFO,
                         handlers=[logging.FileHandler(os.path.join(logdir, 'log.txt')),
                                   logging.StreamHandler(os.sys.stdout)])
