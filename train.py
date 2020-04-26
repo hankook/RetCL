@@ -29,7 +29,10 @@ def main(args):
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
 
     ### MODELS
-    module = load_module(num_branches=2, K=args.K, num_halt_keys=1).to(device)
+    module = load_module(name=args.module,
+                         num_layers=args.num_layers,
+                         num_branches=args.num_branches,
+                         K=args.K, num_halt_keys=1).to(device)
     if args.pretrain is not None:
         ckpt = torch.load(args.pretrain, map_location='cpu')
         module.encoder.load_state_dict(ckpt['encoder'], strict=False)
@@ -84,6 +87,9 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, required=True)
+    parser.add_argument('--num-layers', type=int, default=5)
+    parser.add_argument('--num-branches', type=int, default=2)
+    parser.add_argument('--module', type=str, default='v1')
     parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')

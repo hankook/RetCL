@@ -2,6 +2,7 @@ import dgl
 import math
 import torch
 import itertools
+import logging
 from datasets import MoleculeDict, Reaction, build_dataloader
 from .utils import prepare_reactions, prepare_molecules
 
@@ -78,39 +79,67 @@ def create_retrosynthesis_evaluator(
         sim_fn,
         batch_size=128,
         best=1,
-        device=None):
+        beam=1,
+        device=None,
+        verbose=False):
+
+    if verbose:
+        logger = logging.getLogger('eval')
 
     def evaluate(mol_dict, dataset):
         module.eval()
         num_corrects = [0] * best
         with torch.no_grad():
             embeddings = []
-            for molecules in build_dataloader(mol_dict, batch_size=batch_size):
+            for i, molecules in enumerate(build_dataloader(mol_dict, batch_size=batch_size)):
                 embeddings.append(module(prepare_molecules(molecules, device=device)))
+
+                if verbose:
+                    logger.info('Compute embeddings ... {} / {}'.format(i*batch_size+len(molecules), len(mol_dict)))
+
             embeddings = [torch.cat(e, 0) for e in zip(*embeddings)]
             keys = module.construct_keys(embeddings)
             keys = torch.cat([keys, module.halt_keys], 0)
             halt_idx = keys.shape[0]-1
 
-            for reaction in dataset:
+            for n, reaction in enumerate(dataset):
                 targets = [mol_dict.index(r) for r in reaction.reactants]
                 p_idx = mol_dict.index(reaction.product)
+
+                final_predictions = []
                 predictions = [[]]
+                scores = [0.]
                 for _ in range(4):
                     queries = module.construct_queries([p_idx]*len(predictions), predictions, embeddings)
                     similarities = sim_fn(queries, keys)
                     similarities[:, p_idx] = float('-inf')
-                    index = similarities.argmax(1).item()
-                    if index == halt_idx:
-                        break
-                    predictions[0].append(index)
 
+                    topk_scores, topk_indices = similarities.topk(beam, dim=1)
+                    topk_scores = topk_scores.tolist()
+                    topk_indices = topk_indices.tolist()
+                    new_predictions = []
+                    for i, (pred, score) in enumerate(zip(predictions, scores)):
+                        for j in range(beam):
+                            if topk_indices[i][j] == halt_idx:
+                                final_predictions.append((pred, score + topk_scores[i][j]))
+                            else:
+                                new_predictions.append((pred + [topk_indices[i][j]], score + topk_scores[i][j]))
+                    if len(new_predictions) == 0:
+                        break
+                    predictions, scores = zip(*sorted(new_predictions, key=lambda x: -x[1]))
+                    predictions, scores = predictions[:beam], scores[:beam]
+
+                final_predictions = sorted(final_predictions, key=lambda x: -x[1]/(len(x[0])+1))
                 correct = False
-                for k, pred in enumerate(predictions):
+                for k, (pred, score) in enumerate(final_predictions[:best]):
                     if set(pred) == set(targets):
                         correct = True
                     if correct:
                         num_corrects[k] += 1
+
+                if verbose:
+                    logger.info('Evaluate reactions ... {} / {}'.format(n, len(dataset)))
+
         return [c / len(dataset) for c in num_corrects]
 
     return evaluate
