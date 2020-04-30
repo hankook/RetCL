@@ -21,6 +21,7 @@ def create_retrosynthesis_trainer(
         module,
         loss_fn,
         optimizer,
+        forward=True,
         device=None):
 
     def step(batch):
@@ -32,11 +33,12 @@ def create_retrosynthesis_trainer(
 
         products, reactants = [], []
         positive_indices, ignore_indices = [], []
-        for r in reactions:
-            products.append(None)
-            reactants.append(r.reactants)
-            positive_indices.append(r.product)
-            ignore_indices.append(r.reactants)
+        if forward:
+            for r in reactions:
+                products.append(None)
+                reactants.append(r.reactants)
+                positive_indices.append(r.product)
+                ignore_indices.append(r.reactants)
 
         for r in permuted_reactions:
             for i in range(len(r.reactants)+1):
@@ -55,15 +57,22 @@ def create_retrosynthesis_trainer(
 
         losses, corrects = loss_fn(queries, keys, positive_indices, ignore_indices)
 
-        f_losses, f_corrects = losses[:n], corrects[:n]
-        b_losses, b_corrects = losses[n:], corrects[n:]
+        if forward:
+            f_losses, f_corrects = losses[:n], corrects[:n]
+            b_losses, b_corrects = losses[n:], corrects[n:]
+        else:
+            b_losses, b_corrects = losses, corrects
         b_losses   = torch.split(b_losses,   [(x+1)*math.factorial(x) for x in lengths])
         b_corrects = torch.split(b_corrects, [(x+1)*math.factorial(x) for x in lengths])
         b_losses   = torch.stack([x.view(-1, l+1).sum(1).min(0)[0] for x, l in zip(b_losses,   lengths)], 0)
         b_corrects = torch.stack([x.view(-1, l+1).all(1).any(0)    for x, l in zip(b_corrects, lengths)], 0)
 
-        loss = (f_losses + b_losses).mean()
-        acc = (f_corrects & b_corrects).float().mean()
+        if forward:
+            loss = (f_losses + b_losses).mean()
+            acc = (f_corrects & b_corrects).float().mean()
+        else:
+            loss = b_losses.mean()
+            acc = b_corrects.float().mean()
 
         optimizer.zero_grad()
         loss.backward()
@@ -81,25 +90,40 @@ def create_retrosynthesis_evaluator(
         best=1,
         beam=1,
         device=None,
-        verbose=False):
+        cpu=False,
+        verbose=False,
+        ):
 
     if verbose:
         logger = logging.getLogger('eval')
 
+    chunk_size = 200000
+
     def evaluate(mol_dict, dataset):
         module.eval()
         num_corrects = [0] * best
+        all_predictions = []
         with torch.no_grad():
             embeddings = []
             for i, molecules in enumerate(build_dataloader(mol_dict, batch_size=batch_size)):
-                embeddings.append(module(prepare_molecules(molecules, device=device)))
+                es = module(prepare_molecules(molecules, device=device))
+                if cpu:
+                    if not isinstance(es, torch.Tensor):
+                        es = [e.cpu().detach() for e in es]
+                embeddings.append(es)
 
                 if verbose:
                     logger.info('Compute embeddings ... {} / {}'.format(i*batch_size+len(molecules), len(mol_dict)))
 
-            embeddings = [torch.cat(e, 0) for e in zip(*embeddings)]
+            if not isinstance(embeddings[0], torch.Tensor):
+                embeddings = [torch.cat(e, 0) for e in zip(*embeddings)]
+            else:
+                embeddings = torch.cat(embeddings, 0)
             keys = module.construct_keys(embeddings)
-            keys = torch.cat([keys, module.halt_keys], 0)
+            if cpu:
+                keys = torch.cat([keys, module.halt_keys.cpu()], 0).to(device)
+            else:
+                keys = torch.cat([keys, module.halt_keys], 0)
             halt_idx = keys.shape[0]-1
 
             for n, reaction in enumerate(dataset):
@@ -111,7 +135,12 @@ def create_retrosynthesis_evaluator(
                 scores = [0.]
                 for _ in range(4):
                     queries = module.construct_queries([p_idx]*len(predictions), predictions, embeddings)
-                    similarities = sim_fn(queries, keys)
+                    if cpu:
+                        queries = queries.to(device)
+                    similarities = []
+                    for i in range(0, keys.shape[0], chunk_size):
+                        similarities.append(sim_fn(queries, keys[i:i+chunk_size]).detach())
+                    similarities = torch.cat(similarities, 1)
                     similarities[:, p_idx] = float('-inf')
 
                     topk_scores, topk_indices = similarities.topk(beam, dim=1)
@@ -131,6 +160,7 @@ def create_retrosynthesis_evaluator(
 
                 final_predictions = sorted(final_predictions, key=lambda x: -x[1]/(len(x[0])+1))
                 correct = False
+                all_predictions.append(final_predictions)
                 for k, (pred, score) in enumerate(final_predictions[:best]):
                     if set(pred) == set(targets):
                         correct = True
@@ -140,7 +170,7 @@ def create_retrosynthesis_evaluator(
                 if verbose:
                     logger.info('Evaluate reactions ... {} / {}'.format(n, len(dataset)))
 
-        return [c / len(dataset) for c in num_corrects]
+        return [c / len(dataset) for c in num_corrects], all_predictions
 
     return evaluate
 

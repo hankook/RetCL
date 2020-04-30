@@ -48,7 +48,8 @@ def load_module(
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
 
         module = GraphModule(encoder, *query_fn)
-    else:
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+    elif name == 'v2':
         encoder = Structure2Vec(num_layers=num_layers,
                                 num_hidden_features=num_hidden_features,
                                 num_atom_features=Molecule.atom_feat_size,
@@ -61,7 +62,39 @@ def load_module(
                                        num_bond_features=Molecule.bond_feat_size)
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
         module = GraphModuleV2(encoder, p_encoder, r_encoder, *query_fn)
-    module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+    elif name == 'v3':
+        encoder = Structure2Vec(num_layers=num_layers,
+                                num_hidden_features=num_hidden_features,
+                                num_atom_features=Molecule.atom_feat_size,
+                                num_bond_features=Molecule.bond_feat_size)
+        p_encoder = Structure2Vec(num_layers=num_layers,
+                                  num_hidden_features=num_hidden_features,
+                                  num_atom_features=Molecule.atom_feat_size,
+                                  num_bond_features=Molecule.bond_feat_size)
+        r_encoder = Structure2Vec(num_layers=num_layers,
+                                  num_hidden_features=num_hidden_features,
+                                  num_atom_features=Molecule.atom_feat_size,
+                                  num_bond_features=Molecule.bond_feat_size)
+        query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
+        module = GraphModuleV3(encoder, p_encoder, r_encoder, *query_fn)
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+    elif name == 'v4':
+        encoder = Structure2Vec(num_layers=num_layers,
+                                num_hidden_features=num_hidden_features,
+                                num_atom_features=Molecule.atom_feat_size,
+                                num_bond_features=Molecule.bond_feat_size)
+        module = GraphModuleV4(encoder, num_hidden_features, K)
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+    elif name == 'v5':
+        encoder = Structure2Vec(num_layers=num_layers,
+                                num_hidden_features=num_hidden_features,
+                                num_atom_features=Molecule.atom_feat_size,
+                                num_bond_features=Molecule.bond_feat_size)
+        query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
+
+        module = GraphModuleV5(encoder, *query_fn)
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 10, 256))
 
     logger.info('- # of parameters: {}'.format(sum(p.numel() for p in module.parameters())))
     return module

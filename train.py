@@ -7,14 +7,15 @@ import utils
 from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader
 from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator
 from models import load_module
-from models.similarity import AttentionSimilarity
+from models.similarity import *
 from models.loss import SimCLR
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
 
 def main(args):
-    os.makedirs(args.logdir)
+    if not args.resume:
+        os.makedirs(args.logdir)
     utils.set_logging_options(args.logdir)
 
     logger = logging.getLogger('train')
@@ -38,7 +39,12 @@ def main(args):
         module.encoder.load_state_dict(ckpt['encoder'], strict=False)
 
     ### LOSS
-    sim_fn = AttentionSimilarity()
+    if args.module in ['v1', 'v2', 'v3']:
+        sim_fn = AttentionSimilarity()
+    elif args.module == 'v4':
+        sim_fn = MaxSimilarity()
+    elif args.module == 'v5':
+        sim_fn = MultiAttentionSimilarity()
     loss_fn = SimCLR(sim_fn, args.tau).to(device)
 
     ### OPTIMIZER
@@ -51,15 +57,26 @@ def main(args):
                 params.append(param)
         optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=0.9)
 
+
     ### TRAINER
-    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, device=device)
+    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, forward=not args.backward_only, device=device)
     evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device)
 
     ### TRAINING
-    iteration = 0
-    best_acc = 0
+    if args.resume:
+        ckpt = torch.load(os.path.join(args.logdir, 'best.pth'), map_location='cpu')
+        module.load_state_dict(ckpt['module'])
+        optimizer.load_state_dict(ckpt['optim'])
+        iteration = ckpt['iteration']
+        best_acc = ckpt['best_acc']
+    else:
+        iteration = 0
+        best_acc = 0
+
     for reactions in trainloader:
         iteration += 1
+        if iteration > args.num_iterations:
+            break
 
         # TRAINING
         outputs = train_step(reactions)
@@ -68,7 +85,7 @@ def main(args):
         logger.info('[Iter {}] [Loss {loss:.4f}] [BatchAcc {acc:.4f}]'.format(iteration, **outputs))
 
         if iteration % args.eval_freq == 0:
-            acc = evaluate(mol_dict, datasets['val'])
+            acc, _ = evaluate(mol_dict, datasets['val'])
             acc = acc[0]
             if best_acc < acc:
                 logger.info(f'[Iter {iteration}] [BEST {acc:.4f}]')
@@ -87,6 +104,8 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, required=True)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--backward-only', action='store_true')
     parser.add_argument('--num-layers', type=int, default=5)
     parser.add_argument('--num-branches', type=int, default=2)
     parser.add_argument('--module', type=str, default='v1')

@@ -4,7 +4,7 @@ import torch, dgl
 import torch.optim as optim
 
 import utils
-from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader
+from datasets import load_reaction_dataset, load_molecule_dict, MoleculeDict
 from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator
 from models import load_module
 from models.similarity import AttentionSimilarity
@@ -19,7 +19,12 @@ def main(args):
 
     ### DATASETS
     datasets = load_reaction_dataset(args.datadir)
-    mol_dict = load_molecule_dict(args.datadir)
+    if args.mol_dict is not None:
+        mol_dict = MoleculeDict.load(args.mol_dict)
+        for m in load_molecule_dict(args.datadir):
+            mol_dict.add(m)
+    else:
+        mol_dict = load_molecule_dict(args.datadir)
 
     ### MODELS
     module = load_module(name=args.module,
@@ -34,8 +39,8 @@ def main(args):
     sim_fn = AttentionSimilarity()
 
     ### EVALUATOR
-    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, verbose=True, best=args.best, beam=args.beam)
-    topk_acc = evaluate(mol_dict, datasets['test'])
+    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, verbose=True, best=args.best, beam=args.beam, cpu=True)
+    topk_acc, _ = evaluate(mol_dict, datasets['test'])
     logger.info('  K    ACC')
     for k, acc in enumerate(topk_acc):
         logger.info('{:3d}  {:.4f}'.format(k+1, acc))
@@ -48,6 +53,7 @@ if __name__ == '__main__':
     parser.add_argument('--module', type=str, default='v1')
     parser.add_argument('--ckpt', type=str, default=None)
     parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')
+    parser.add_argument('--mol-dict', type=str, default=None)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--beam', type=int, default=5)
     parser.add_argument('--best', type=int, default=5)
