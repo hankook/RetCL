@@ -31,6 +31,7 @@ def main(args):
 
     ### MODELS
     module = load_module(name=args.module,
+                         encoder=args.encoder,
                          num_layers=args.num_layers,
                          num_branches=args.num_branches,
                          K=args.K, num_halt_keys=1).to(device)
@@ -49,13 +50,17 @@ def main(args):
 
     ### OPTIMIZER
     if not args.freeze:
-        optimizer = optim.SGD(module.parameters(), lr=args.lr, weight_decay=args.wd, momentum=0.9)
+        params = list(module.parameters())
     else:
         params = []
         for name, param in module.named_parameters():
             if not name.startswith('encoder'):
                 params.append(param)
+
+    if args.optim == 'sgd':
         optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=0.9)
+    elif args.optim == 'adam':
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
 
 
     ### TRAINER
@@ -72,6 +77,15 @@ def main(args):
     else:
         iteration = 0
         best_acc = 0
+
+    def save(name='last.pth'):
+        torch.save({
+            'module': module.state_dict(),
+            'optim': optimizer.state_dict(),
+            'iteration': iteration,
+            'best_acc': best_acc,
+            'args': vars(args),
+        }, os.path.join(args.logdir, name))
 
     for reactions in trainloader:
         iteration += 1
@@ -90,14 +104,8 @@ def main(args):
             if best_acc < acc:
                 logger.info(f'[Iter {iteration}] [BEST {acc:.4f}]')
                 best_acc = acc
-                torch.save({
-                    'module': module.state_dict(),
-                    'optim': optimizer.state_dict(),
-                    'iteration': iteration,
-                    'best_acc': best_acc,
-                    'args': vars(args),
-                }, os.path.join(args.logdir, 'best.pth'))
-
+                save('best.pth')
+            save()
             logger.info(f'[Iter {iteration}] [Val Acc {acc:.4f}]')
 
 
@@ -109,11 +117,13 @@ if __name__ == '__main__':
     parser.add_argument('--num-layers', type=int, default=5)
     parser.add_argument('--num-branches', type=int, default=2)
     parser.add_argument('--module', type=str, default='v1')
+    parser.add_argument('--encoder', type=str, default='s2v')
     parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
+    parser.add_argument('--optim', type=str, default='sgd')
     parser.add_argument('--lr', type=float, default=1e-2)
     parser.add_argument('--wd', type=float, default=1e-5)
     parser.add_argument('--tau', type=float, default=0.1)

@@ -2,6 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class ResidualLayer(nn.Module):
+
+    def __init__(self, num_hidden_features):
+        super(ResidualLayer, self).__init__()
+        self.linear1 = nn.Linear(num_hidden_features, num_hidden_features)
+        self.linear2 = nn.Linear(num_hidden_features, num_hidden_features)
+        self.bn1 = nn.BatchNorm1d(num_hidden_features)
+        self.bn2 = nn.BatchNorm1d(num_hidden_features)
+        self.activation = nn.ReLU(inplace=True)
+
+    def forward(self, g, in_features):
+        out_features = self.activation(self.bn1(self.linear1(in_features)))
+        out_features = self.activation(self.bn2(self.linear2(out_features)))+in_features
+        return out_features
+
+
 class MultiAttentionQuery(nn.Module):
     def __init__(self,
                  hidden_size=256,

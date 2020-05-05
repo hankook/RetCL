@@ -20,18 +20,49 @@ def load_encoder(
         num_layers=5,
         num_hidden_features=256):
 
-    logger.info('Loading Encoder ...')
+    if name == 's2v':
+        encoder = Structure2Vec(num_layers=num_layers,
+                                num_hidden_features=num_hidden_features,
+                                num_atom_features=Molecule.atom_feat_size,
+                                num_bond_features=Molecule.bond_feat_size)
+    elif name == 's2v-ours':
+        encoder = Structure2VecOurs(num_layers=num_layers,
+                                    num_hidden_features=num_hidden_features,
+                                    num_atom_features=Molecule.atom_feat_size,
+                                    num_bond_features=Molecule.bond_feat_size)
+    elif name == 'attentionfp':
+        encoder = AttentionFP(node_feat_size=Molecule.atom_feat_size,
+                              edge_feat_size=Molecule.bond_feat_size,
+                              num_layers=num_layers,
+                              graph_feat_size=num_hidden_features)
+    elif name == 'mpnn':
+        encoder = MPNN(node_in_feats=Molecule.atom_feat_size,
+                       edge_in_feats=Molecule.bond_feat_size,
+                       node_out_feats=num_hidden_features,
+                       num_step_message_passing=num_layers)
+    elif name == 'wln':
+        encoder = WLN(node_in_feats=Molecule.atom_feat_size,
+                      edge_in_feats=Molecule.bond_feat_size,
+                      node_out_feats=num_hidden_features,
+                      n_layers=num_layers)
+    elif name == 'edgewise':
+        encoder = EdgewiseGNN(num_layers=num_layers,
+                              num_hidden_features=num_hidden_features,
+                              num_atom_features=Molecule.atom_feat_size,
+                              num_bond_types=4)
+    elif name == 'relgraph':
+        encoder = RelGraphNN(num_layers=num_layers,
+                             num_hidden_features=num_hidden_features,
+                             num_atom_features=Molecule.atom_feat_size,
+                             num_bond_types=4)
 
-    encoder = Structure2Vec(num_layers=num_layers,
-                            num_hidden_features=num_hidden_features,
-                            num_atom_features=Molecule.atom_feat_size,
-                            num_bond_features=Molecule.bond_feat_size)
+    logger.info('- # of encoder parameters: {}'.format(sum(p.numel() for p in encoder.parameters())))
 
-    logger.info('- # of parameters: {}'.format(sum(p.numel() for p in encoder.parameters())))
     return encoder
 
 def load_module(
         name='v1',
+        encoder='s2v',
         num_layers=5,
         num_hidden_features=256,
         num_branches=2,
@@ -87,16 +118,13 @@ def load_module(
         module = GraphModuleV4(encoder, num_hidden_features, K)
         module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
     elif name == 'v5':
-        encoder = Structure2Vec(num_layers=num_layers,
-                                num_hidden_features=num_hidden_features,
-                                num_atom_features=Molecule.atom_feat_size,
-                                num_bond_features=Molecule.bond_feat_size)
+        encoder = load_encoder(encoder, num_layers, num_hidden_features)
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
 
         module = GraphModuleV5(encoder, *query_fn)
         module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 10, 256))
 
-    logger.info('- # of parameters: {}'.format(sum(p.numel() for p in module.parameters())))
+    logger.info('- # of module parameters: {}'.format(sum(p.numel() for p in module.parameters())))
     return module
 
 def graph_parallel(module, batch):
