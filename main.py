@@ -52,7 +52,9 @@ def main(args):
         ckpt = torch.load(os.path.join(args.logdir, 'best.pth'), map_location='cpu')
         module.load_state_dict(ckpt['module'])
         print('Load checkpoint @ {}'.format(ckpt['iteration']))
-        acc = evaluate(module, score_fn, datasets['test'], datasets['test_mol_dict'], batch_size=64, best=5, beam=5)
+        mol_dict = datasets['known_mol_dict']
+        print('# of molecules: {}'.format(len(mol_dict)))
+        acc = evaluate(module, score_fn, datasets['test'], mol_dict, batch_size=64, best=5, beam=5)
         print(acc)
         return
 

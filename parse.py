@@ -54,12 +54,15 @@ def main(args):
 
     n = len(preds) // len(products)
     num_corrects = torch.zeros(n)
+    total = 0
+    count = 0
     for i, (x, y) in enumerate(zip(products, reactants)):
         graphs = [smiles_to_bigraph(x,
                                     node_featurizer=atom_featurizer,
                                     edge_featurizer=bond_featurizer)]
         p_indices = []
         r_indices = []
+        smiles = []
         for j in range(i*n, (i+1)*n):
             p_indices.append(0)
             r_indices.append([])
@@ -71,6 +74,7 @@ def main(args):
                         node_featurizer=atom_featurizer,
                         edge_featurizer=bond_featurizer))
                     r_indices[-1].append(len(graphs)-1)
+                smiles.append(preds[j])
             except:
                 p_indices.pop(-1)
                 r_indices.pop(-1)
@@ -88,18 +92,27 @@ def main(args):
 
         _, indices = torch.sort(scores, dim=0, descending=True)
         correct = False
+        check = False
+        if indices[0].item() == 0:
+            total += 1
+            check = True
         for k, idx in enumerate(indices.tolist()):
-            pred = [_canonicalize_smiles(s) for s in preds[i*n+idx]]
+            pred = smiles[idx]
+            # pred = [_canonicalize_smiles(s) for s in preds[i*n+idx]]
             if set(pred) == set(y):
                 correct = True
             if correct:
                 num_corrects[k] += 1
+                if check and k == 0:
+                    count += 1
         if correct:
             for l in range(k+1, n):
                 num_corrects[l] += 1
         print('{} / {}'.format(i, len(products)), end='\r')
     print()
     print(num_corrects / len(products))
+    print(total / len(products))
+    print(count / total)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
