@@ -3,7 +3,7 @@ import math
 import torch
 import itertools
 import logging
-from datasets import MoleculeDict, Reaction, build_dataloader
+from datasets import Molecule, MoleculeDict, Reaction, build_dataloader
 from .utils import prepare_reactions, prepare_molecules
 
 def permute_reactions(reactions):
@@ -92,12 +92,12 @@ def create_retrosynthesis_evaluator(
         device=None,
         cpu=False,
         verbose=False,
+        chunk_size=200000,
         ):
 
     if verbose:
         logger = logging.getLogger('eval')
 
-    chunk_size = 200000
 
     def evaluate(mol_dict, dataset):
         module.eval()
@@ -171,6 +171,57 @@ def create_retrosynthesis_evaluator(
                     logger.info('Evaluate reactions ... {} / {}'.format(n, len(dataset)))
 
         return [c / len(dataset) for c in num_corrects], all_predictions
+
+    return evaluate
+
+def create_retrosynthesis_score_evaluator(
+        module,
+        sim_fn,
+        forward=True,
+        device=None):
+
+    def evaluate(reactions):
+        module.eval()
+        with torch.no_grad():
+            reactions, graphs = prepare_reactions(reactions, device=device)
+            n = len(reactions)
+            lengths = [len(r.reactants) for r in reactions]
+            permuted_reactions = permute_reactions(reactions)
+
+            products, reactants = [], []
+            positive_indices, ignore_indices = [], []
+            if forward:
+                for r in reactions:
+                    products.append(None)
+                    reactants.append(r.reactants)
+                    positive_indices.append(r.product)
+                    ignore_indices.append(r.reactants)
+
+            for r in permuted_reactions:
+                for i in range(len(r.reactants)+1):
+                    products.append(r.product)
+                    reactants.append(r.reactants[:i])
+                    if i < len(r.reactants):
+                        positive_indices.append(r.reactants[i])
+                    else:
+                        positive_indices.append(-1)
+                    ignore_indices.append(r.product)
+
+            embeddings = module(graphs)
+            queries = module.construct_queries(products, reactants, embeddings)
+            keys = module.construct_keys(embeddings)
+            keys = torch.cat([keys, module.halt_keys], 0)
+
+            scores = sim_fn(queries, keys[positive_indices], many_to_many=False)
+            if forward:
+                f_scores, b_scores = scores[:n], scores[n:]
+            else:
+                f_scores, b_scores = 0, scores
+
+            b_scores = torch.split(b_scores, [(x+1)*math.factorial(x) for x in lengths])
+            b_scores = torch.stack([x.view(-1, l+1).sum(1).max(0)[0] for x, l in zip(b_scores, lengths)], 0)
+
+            return f_scores + b_scores
 
     return evaluate
 

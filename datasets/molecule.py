@@ -1,7 +1,7 @@
 import dgl
 import torch
 from torch.utils.data import Dataset
-from dgl.data.chem.utils import (
+from dgllife.utils import (
         CanonicalAtomFeaturizer,
         CanonicalBondFeaturizer,
         smiles_to_bigraph )
@@ -35,6 +35,8 @@ class Molecule(object):
     def from_smiles(cls, smiles, canonicalize=True):
         if canonicalize:
             smiles = canonicalize_smiles(smiles)
+        if len(smiles) == 0 or smiles is None:
+            raise Exception('invalid smiles: {}'.format(smiles))
         graph = smiles_to_bigraph(smiles,
                                   node_featurizer=cls.atom_featurizer,
                                   edge_featurizer=cls.bond_featurizer)

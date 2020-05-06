@@ -129,7 +129,19 @@ class MultiAttentionSimilarity(AttentionSimilarity):
             return self.compute(queries, keys)
 
     def compute(self, queries, keys):
-        raise NotImplementedError
+        """
+        queries: N x C x d
+        keys:    N x K x d
+        return:  N x 1
+        """
+
+        N, C, d = queries.shape
+        N, K, d = keys.shape
+        queries = queries.repeat_interleave(K, dim=0)
+        keys = keys.view(N*K, d)
+        scores = super(MultiAttentionSimilarity, self).compute(queries, keys)
+        scores = scores.view(N, K).max(1, keepdim=True)[0]
+        return scores
 
     def compute_all(self, queries, keys):
         """
