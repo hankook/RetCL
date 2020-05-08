@@ -15,16 +15,17 @@ from datasets import Molecule
 
 logger = logging.getLogger('module')
 
-def load_encoder(
-        name='s2v',
-        num_layers=5,
-        num_hidden_features=256):
+def load_encoder(args):
+    name = args.encoder
+    num_layers = args.num_layers
+    num_hidden_features = 256
 
     if name == 's2v':
         encoder = Structure2Vec(num_layers=num_layers,
                                 num_hidden_features=num_hidden_features,
                                 num_atom_features=Molecule.atom_feat_size,
-                                num_bond_features=Molecule.bond_feat_size)
+                                num_bond_features=Molecule.bond_feat_size,
+                                bn_first=args.bn_first)
     elif name == 's2v-ours':
         encoder = Structure2VecOurs(num_layers=num_layers,
                                     num_hidden_features=num_hidden_features,
@@ -60,22 +61,19 @@ def load_encoder(
 
     return encoder
 
-def load_module(
-        name='v1',
-        encoder='s2v',
-        num_layers=5,
-        num_hidden_features=256,
-        num_branches=2,
-        K=2,
-        num_halt_keys=1):
+def load_module(args):
+    name                = args.module
+    encoder             = args.encoder
+    num_layers          = args.num_layers
+    num_hidden_features = 256
+    num_branches        = args.num_branches
+    K                   = args.K
+    num_halt_keys       = 1
 
     logger.info('Loading Module ...')
 
     if name == 'v1':
-        encoder = Structure2Vec(num_layers=num_layers,
-                                num_hidden_features=num_hidden_features,
-                                num_atom_features=Molecule.atom_feat_size,
-                                num_bond_features=Molecule.bond_feat_size)
+        encoder = load_encoder(args)
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
 
         module = GraphModule(encoder, *query_fn)
@@ -118,7 +116,7 @@ def load_module(
         module = GraphModuleV4(encoder, num_hidden_features, K)
         module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
     elif name == 'v5':
-        encoder = load_encoder(encoder, num_layers, num_hidden_features)
+        encoder = load_encoder(args)
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
 
         module = GraphModuleV5(encoder, *query_fn)

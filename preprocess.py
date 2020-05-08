@@ -27,12 +27,6 @@ def uspto50k(datadir):
     print(len(molecule_dict), 'unique molecules ...')
     molecule_dict.save(os.path.join(datadir, 'cache.molecule_dict'))
 
-def _worker(smiles):
-    try:
-        return canonicalize_smiles(smiles)
-    except:
-        return None
-
 def uspto_large(datadir):
     molecule_dict = MoleculeDict()
     print('preprocessing USPTO-Large ...')
@@ -58,7 +52,7 @@ def uspto_large2(datadir):
     with open(os.path.join(datadir, 'candidates_single.txt')) as f:
         t0 = time.time()
         for i, line in enumerate(f.readlines()):
-            mol = Molecule.from_smiles(line.strip(), canonicalize=False)
+            mol = Molecule.from_smiles(line.strip(), canonicalize=True)
             molecule_dict.add(mol)
             print('{} ({:.4f}s/mol)'.format(i+1, (time.time()-t0)/(i+1)), end='\r')
         print('\n- # of unique molecules:', len(molecule_dict))

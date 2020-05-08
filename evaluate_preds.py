@@ -9,6 +9,7 @@ from trainers.retrosynthesis import create_retrosynthesis_score_evaluator
 from models import load_module
 from models.similarity import *
 from models.loss import SimCLR
+from options import add_model_arguments
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
@@ -29,11 +30,7 @@ def main(args):
     logger = logging.getLogger('eval')
 
     ### MODELS
-    module = load_module(name=args.module,
-                         encoder=args.encoder,
-                         num_layers=args.num_layers,
-                         num_branches=args.num_branches,
-                         K=args.K, num_halt_keys=1).to(device)
+    module = load_module(args).to(device)
     if args.ckpt is not None:
         ckpt = torch.load(args.ckpt, map_location='cpu')
         module.load_state_dict(ckpt['module'])
@@ -110,14 +107,10 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num-layers', type=int, default=5)
-    parser.add_argument('--num-branches', type=int, default=2)
-    parser.add_argument('--module', type=str, default='v1')
-    parser.add_argument('--encoder', type=str, default='s2v')
+    add_model_arguments(parser)
     parser.add_argument('--ckpt', type=str, default=None)
     parser.add_argument('--pred', type=str, required=True)
     parser.add_argument('--max-preds', type=int, default=50)
-    parser.add_argument('--K', type=int, default=2)
     args = parser.parse_args()
 
     main(args)

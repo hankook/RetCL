@@ -22,6 +22,7 @@ def create_retrosynthesis_trainer(
         loss_fn,
         optimizer,
         forward=True,
+        clip=None,
         device=None):
 
     def step(batch):
@@ -76,6 +77,9 @@ def create_retrosynthesis_trainer(
 
         optimizer.zero_grad()
         loss.backward()
+        if clip is not None:
+            torch.nn.utils.clip_grad_norm_(sum([list(pg['params']) for pg in optimizer.param_groups], []),
+                                           clip)
         optimizer.step()
 
         return { 'loss': loss.item(), 'acc': acc.item() }
@@ -93,6 +97,7 @@ def create_retrosynthesis_evaluator(
         cpu=False,
         verbose=False,
         chunk_size=200000,
+        max_idx=-1,
         ):
 
     if verbose:
@@ -142,6 +147,7 @@ def create_retrosynthesis_evaluator(
                         similarities.append(sim_fn(queries, keys[i:i+chunk_size]).detach())
                     similarities = torch.cat(similarities, 1)
                     similarities[:, p_idx] = float('-inf')
+                    similarities[:, max_idx:-1] = float('-inf')
 
                     topk_scores, topk_indices = similarities.topk(beam, dim=1)
                     topk_scores = topk_scores.tolist()

@@ -9,6 +9,7 @@ from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retros
 from models import load_module
 from models.similarity import *
 from models.loss import SimCLR
+from options import add_model_arguments
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
@@ -30,11 +31,7 @@ def main(args):
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
 
     ### MODELS
-    module = load_module(name=args.module,
-                         encoder=args.encoder,
-                         num_layers=args.num_layers,
-                         num_branches=args.num_branches,
-                         K=args.K, num_halt_keys=1).to(device)
+    module = load_module(args).to(device)
     if args.pretrain is not None:
         ckpt = torch.load(args.pretrain, map_location='cpu')
         module.encoder.load_state_dict(ckpt['encoder'], strict=False)
@@ -64,7 +61,7 @@ def main(args):
 
 
     ### TRAINER
-    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, forward=not args.backward_only, device=device)
+    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, forward=not args.backward_only, clip=args.clip, device=device)
     evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device)
 
     ### TRAINING
@@ -111,24 +108,21 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    add_model_arguments(parser)
     parser.add_argument('--logdir', type=str, required=True)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--backward-only', action='store_true')
-    parser.add_argument('--num-layers', type=int, default=5)
-    parser.add_argument('--num-branches', type=int, default=2)
-    parser.add_argument('--module', type=str, default='v1')
-    parser.add_argument('--encoder', type=str, default='s2v')
     parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
     parser.add_argument('--optim', type=str, default='sgd')
+    parser.add_argument('--clip', type=float, default=5.0)
     parser.add_argument('--lr', type=float, default=1e-2)
     parser.add_argument('--wd', type=float, default=1e-5)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
-    parser.add_argument('--K', type=int, default=2)
     args = parser.parse_args()
 
     main(args)
