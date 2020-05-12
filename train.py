@@ -1,11 +1,13 @@
 import os, argparse, logging
+from collections import defaultdict
 
-import torch, dgl
+import torch, dgl, faiss
 import torch.optim as optim
 
 import utils
 from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader
 from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator
+from trainers.utils import collect_embeddings, knn_search
 from models import load_module
 from models.similarity import *
 from models.loss import SimCLR
@@ -13,6 +15,7 @@ from options import add_model_arguments
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
+faiss_res = faiss.StandardGpuResources()
 
 def main(args):
     if not args.resume:
@@ -25,7 +28,7 @@ def main(args):
 
     ### DATASETS
     datasets = load_reaction_dataset(args.datadir)
-    mol_dict = load_molecule_dict(args.datadir)
+    mol_dict = load_molecule_dict(args.mol_dict)
 
     ### DATALOADERS
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
@@ -59,9 +62,13 @@ def main(args):
     elif args.optim == 'adam':
         optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
 
+    nearest_neighbors = defaultdict(list)
 
     ### TRAINER
-    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, forward=not args.backward_only, clip=args.clip, device=device)
+    train_step = create_retrosynthesis_trainer(module, loss_fn, optimizer, forward=not args.backward_only, clip=args.clip,
+                                               nearest_neighbors=nearest_neighbors,
+                                               alpha=args.alpha,
+                                               device=device)
     evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device)
 
     ### TRAINING
@@ -89,6 +96,18 @@ def main(args):
         if iteration > args.num_iterations:
             break
 
+        if (iteration-1) % args.update_freq == 0:
+            logger.info('Update nearest_neighbors ...')
+            with torch.no_grad():
+                embeddings = collect_embeddings(module, mol_dict, device=device)
+                logger.info('Update nearest_neighbors ... collecting embeddings is done')
+                keys = module.construct_keys(embeddings)
+                keys = F.normalize(keys)
+                _, indices = knn_search(faiss_res, keys, keys, args.num_neighbors+1)
+                for i, nns in enumerate(indices.tolist()):
+                    nearest_neighbors[mol_dict[i].smiles] = [mol_dict[j] for j in nns[1:]]
+            logger.info('Update nearest_neighbors ... done')
+
         # TRAINING
         outputs = train_step(reactions)
 
@@ -96,7 +115,7 @@ def main(args):
         logger.info('[Iter {}] [Loss {loss:.4f}] [BatchAcc {acc:.4f}]'.format(iteration, **outputs))
 
         if iteration % args.eval_freq == 0:
-            acc, _ = evaluate(mol_dict, datasets['val'])
+            acc, _ = evaluate(datasets['mol_dict'], datasets['val'])
             acc = acc[0]
             if best_acc < acc:
                 logger.info(f'[Iter {iteration}] [BEST {acc:.4f}]')
@@ -114,7 +133,8 @@ if __name__ == '__main__':
     parser.add_argument('--backward-only', action='store_true')
     parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--freeze', action='store_true')
-    parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')
+    parser.add_argument('--datadir', type=str, default='/data/uspto/uspto50k_coley')
+    parser.add_argument('--mol-dict', type=str, default='/data/uspto/uspto50k_coley')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--num-iterations', type=int, default=200000)
     parser.add_argument('--optim', type=str, default='sgd')
@@ -123,6 +143,9 @@ if __name__ == '__main__':
     parser.add_argument('--wd', type=float, default=1e-5)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
+    parser.add_argument('--num-neighbors', type=int, default=0)
+    parser.add_argument('--update-freq', type=int, default=1000)
+    parser.add_argument('--alpha', type=float, default=0)
     args = parser.parse_args()
 
     main(args)

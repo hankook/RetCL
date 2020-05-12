@@ -1,10 +1,11 @@
 import dgl
 import math
 import torch
+import torch.nn.functional as F
 import itertools
 import logging
 from datasets import Molecule, MoleculeDict, Reaction, build_dataloader
-from .utils import prepare_reactions, prepare_molecules
+from .utils import prepare_reactions, prepare_molecules, collect_embeddings
 
 def permute_reactions(reactions):
     permuted_reactions = []
@@ -22,12 +23,22 @@ def create_retrosynthesis_trainer(
         loss_fn,
         optimizer,
         forward=True,
+        nearest_neighbors=None,
         clip=None,
+        mol_dict=None,
+        alpha=0,
         device=None):
 
     def step(batch):
         module.train()
-        reactions, graphs = prepare_reactions(batch, device=device)
+        if alpha > 0 and mol_dict is not None:
+            additional_molecules = [mol_dict[i] for i in random.sample(list(range(len(mol_dict))), len(batch))]
+        else:
+            additional_molecules = None
+        reactions, graphs = prepare_reactions(batch,
+                                              nearest_neighbors=nearest_neighbors,
+                                              additional_molecules=additional_molecules,
+                                              device=device)
         n = len(reactions)
         lengths = [len(r.reactants) for r in reactions]
         permuted_reactions = permute_reactions(reactions)
@@ -75,6 +86,12 @@ def create_retrosynthesis_trainer(
             loss = b_losses.mean()
             acc = b_corrects.float().mean()
 
+        if alpha > 0:
+            keys = F.normalize(keys)
+            key_loss = F.cross_entropy(torch.matmul(keys, keys.t()).div(loss_fn.temperature),
+                                       torch.arange(keys.shape[0], device=device))
+            loss = loss + key_loss.mul(alpha)
+
         optimizer.zero_grad()
         loss.backward()
         if clip is not None:
@@ -103,27 +120,12 @@ def create_retrosynthesis_evaluator(
     if verbose:
         logger = logging.getLogger('eval')
 
-
     def evaluate(mol_dict, dataset):
         module.eval()
         num_corrects = [0] * best
         all_predictions = []
         with torch.no_grad():
-            embeddings = []
-            for i, molecules in enumerate(build_dataloader(mol_dict, batch_size=batch_size)):
-                es = module(prepare_molecules(molecules, device=device))
-                if cpu:
-                    if not isinstance(es, torch.Tensor):
-                        es = [e.cpu().detach() for e in es]
-                embeddings.append(es)
-
-                if verbose:
-                    logger.info('Compute embeddings ... {} / {}'.format(i*batch_size+len(molecules), len(mol_dict)))
-
-            if not isinstance(embeddings[0], torch.Tensor):
-                embeddings = [torch.cat(e, 0) for e in zip(*embeddings)]
-            else:
-                embeddings = torch.cat(embeddings, 0)
+            embeddings = collect_embeddings(module, mol_dict, batch_size=batch_size, cpu=cpu, device=device)
             keys = module.construct_keys(embeddings)
             if cpu:
                 keys = torch.cat([keys, module.halt_keys.cpu()], 0).to(device)
