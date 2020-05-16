@@ -39,7 +39,7 @@ def collect_embeddings(module, mol_dict, batch_size=512, cpu=True, device=None):
     return embeddings
 
 
-def prepare_reactions(reactions, nearest_neighbors=None, additional_molecules=None, device=None):
+def prepare_reactions(reactions, nearest_neighbors=None, num_neighbors=None, additional_molecules=None, device=None):
     molecule_dict = MoleculeDict()
     for r in reactions:
         for m in [r.product] + r.reactants:
@@ -51,7 +51,7 @@ def prepare_reactions(reactions, nearest_neighbors=None, additional_molecules=No
 
     if nearest_neighbors is not None:
         for i in range(len(molecule_dict)):
-            for mol in nearest_neighbors[molecule_dict[i].smiles]:
+            for mol in nearest_neighbors[molecule_dict[i].smiles][:num_neighbors]:
                 molecule_dict.add(mol)
 
     graphs = dgl.batch([m.graph for m in molecule_dict])

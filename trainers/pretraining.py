@@ -1,39 +1,73 @@
 import copy, random
+import dgl
+import torch
 import torch.nn.functional as F
 from .utils import prepare_molecules
-from datasets import Molecule
+from datasets import Molecule, MoleculeDict
+
+def fill_zero_randomly(tensor, p):
+    tensor[torch.rand(tensor.shape[0]) < p] = 0
 
 def create_pretrainer(
-        encoder,
-        classifier,
+        module,
+        loss_fn,
         optimizer,
+        mol_dict=None,
+        all_keys=None,
+        num_neighbors=None,
+        momentum=None,
+        clip=None,
         p=0.1,
         device=None):
 
-    outputs = Molecule.atom_feat_size
-
     def step(batch):
-        encoder.train()
-        graphs = prepare_molecules(batch, device=device)
-        graphs = copy.deepcopy(graphs)
+        batch_mols = MoleculeDict()
+        for mol in batch:
+            batch_mols.add(mol)
 
-        indices = []
-        for i in range(graphs.number_of_nodes()):
-            if random.random() < p:
-                indices.append(i)
-        targets = copy.deepcopy(graphs.ndata['x'][indices])[:, :43]
-        graphs.ndata['x'][indices] = 0.
+        if num_neighbors > 0:
+            batch_mol_indices = [mol_dict.index(mol) for mol in batch_mols]
+            with torch.no_grad():
+                batch_keys = all_keys[batch_mol_indices]
+                _, nearest_neighbors = torch.einsum('ik, jk -> ij', batch_keys, all_keys).topk(num_neighbors+1, dim=1)
+                for nns in nearest_neighbors.tolist():
+                    for idx in nns[1:]:
+                        batch_mols.add(mol_dict[idx])
 
-        node_embeddings = encoder(graphs)
-        node_embeddings = node_embeddings[indices]
+            batch_mol_indices = [mol_dict.index(mol) for mol in batch_mols]
 
-        preds = classifier(node_embeddings)[:, :43]
+            graphs1 = dgl.batch([mol.graph for mol in batch_mols]).to(device)
+            with torch.no_grad():
+                module.eval()
+                embeddings = module(graphs1)
+                keys = module.construct_keys(embeddings)
+                all_keys[batch_mol_indices].mul_(momentum).add_(1-momentum, F.normalize(keys))
+        else:
+            graphs1 = dgl.batch([mol.graph for mol in batch_mols]).to(device)
 
-        loss = F.kl_div(F.log_softmax(preds, 1), targets, reduction='batchmean')
-        acc = (preds.argmax(1) == targets.argmax(1)).float().mean()
+        n = len(batch_mols)
+        module.train()
+        fill_zero_randomly(graphs1.ndata['x'], p)
+        fill_zero_randomly(graphs1.edata['w'], p)
+        graphs2 = dgl.batch([mol.graph for mol in batch_mols]).to(device)
+        fill_zero_randomly(graphs2.ndata['x'], p)
+        fill_zero_randomly(graphs2.edata['w'], p)
+
+        graphs = dgl.batch([graphs1, graphs2])
+        embeddings = module(graphs)
+        keys = module.construct_keys(embeddings)
+        positive_indices = list(range(n, 2*n)) + list(range(n))
+        ignore_indices = list(range(2*n))
+        losses, corrects = loss_fn(keys, keys, positive_indices, ignore_indices)
+
+        loss = losses.mean()
+        acc = corrects.float().mean()
 
         optimizer.zero_grad()
         loss.backward()
+        if clip is not None:
+            torch.nn.utils.clip_grad_norm_(sum([list(pg['params']) for pg in optimizer.param_groups], []),
+                                           clip)
         optimizer.step()
 
         return { 'loss': loss.item(), 'acc': acc.item() }

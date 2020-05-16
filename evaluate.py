@@ -42,7 +42,7 @@ def main(args):
         sim_fn = AttentionSimilarity()
 
     ### EVALUATOR
-    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, verbose=True, best=args.best, beam=args.beam, cpu=True, chunk_size=5000, max_idx=max_idx)
+    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, verbose=True, best=args.best, beam=args.beam, cpu=True, chunk_size=5000, max_idx=max_idx, forward=not args.backward_only)
     topk_acc, _ = evaluate(mol_dict, datasets['test'])
     logger.info('  K    ACC')
     for k, acc in enumerate(topk_acc):
@@ -53,9 +53,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     add_model_arguments(parser)
     parser.add_argument('--ckpt', type=str, default=None)
-    parser.add_argument('--datadir', type=str, default='/data/uspto50k_coley')
+    parser.add_argument('--datadir', type=str, default='/data/uspto/uspto50k_coley')
     parser.add_argument('--mol-dict', type=str, default=None)
     parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--backward-only', action='store_true')
     parser.add_argument('--beam', type=int, default=5)
     parser.add_argument('--best', type=int, default=5)
     args = parser.parse_args()
