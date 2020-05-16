@@ -22,6 +22,13 @@ def load_molecule_dict(datadir):
     logger.info('- {} molecules'.format(len(mol_dict)))
     return mol_dict
 
+def check_molecule_dict(mol_dict, datasets):
+    for split in ['train', 'val', 'test']:
+        for rxn in datasets[split]:
+            assert rxn.product in mol_dict
+            for reactant in rxn.reactants:
+                assert reactant in mol_dict
+
 def collate(batch):
     return batch
 

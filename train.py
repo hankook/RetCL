@@ -1,13 +1,13 @@
 import os, argparse, logging, random
 from collections import defaultdict
 
-import torch, dgl, faiss
+import torch, dgl
 import torch.optim as optim
 
 import utils
-from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader
+from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader, check_molecule_dict
 from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator
-from trainers.utils import collect_embeddings, knn_search
+from trainers.utils import collect_embeddings
 from models import load_module
 from models.similarity import *
 from models.loss import SimCLR
@@ -15,7 +15,6 @@ from options import add_model_arguments
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
-faiss_res = faiss.StandardGpuResources()
 
 def main(args):
     if not args.resume:
@@ -29,8 +28,8 @@ def main(args):
     ### DATASETS
     datasets = load_reaction_dataset(args.datadir)
     mol_dict = load_molecule_dict(args.mol_dict)
-    for mol in datasets['mol_dict']:
-        mol_dict.add(mol)
+    check_molecule_dict(datasets['mol_dict'], datasets)
+    check_molecule_dict(mol_dict, datasets)
 
     ### DATALOADERS
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
@@ -42,23 +41,11 @@ def main(args):
         module.load_state_dict(ckpt['module'], strict=False)
 
     ### LOSS
-    if args.module in ['v1', 'v2', 'v3']:
-        sim_fn = AttentionSimilarity()
-    elif args.module == 'v4':
-        sim_fn = MaxSimilarity()
-    elif args.module == 'v5':
-        sim_fn = MultiAttentionSimilarity()
+    sim_fn = AttentionSimilarity()
     loss_fn = SimCLR(sim_fn, args.tau).to(device)
 
     ### OPTIMIZER
-    if not args.freeze:
-        params = list(module.parameters())
-    else:
-        params = []
-        for name, param in module.named_parameters():
-            if not name.startswith('encoder'):
-                params.append(param)
-
+    params = list(module.parameters())
     if args.optim == 'sgd':
         optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=0.9)
     elif args.optim == 'adam':
@@ -70,10 +57,11 @@ def main(args):
     nearest_neighbors = defaultdict(list)
 
     ### TRAINER
-    train_step = create_retrosynthesis_trainer(module, loss_fn, forward=not args.backward_only, clip=args.clip,
+    train_step = create_retrosynthesis_trainer(module,
+                                               loss_fn,
+                                               forward=not args.backward_only,
                                                nearest_neighbors=nearest_neighbors,
                                                num_neighbors=args.num_neighbors,
-                                               alpha=args.alpha,
                                                device=device)
     evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device)
 
@@ -97,42 +85,22 @@ def main(args):
             'args': vars(args),
         }, os.path.join(args.logdir, name))
 
-    product2reactions = defaultdict(list)
-    for i, rxn in enumerate(datasets['train']):
-        product2reactions[rxn.product.smiles].append(i)
-
+    embeddings = collect_embeddings(module, mol_dict, device=device)
     for reactions in trainloader:
         iteration += 1
         if iteration > args.num_iterations:
             break
 
-        if (iteration-1) % args.update_freq == 0:
+        if (iteration-1) % args.eval_freq == 0:
             logger.info('Update nearest_neighbors ...')
             with torch.no_grad():
-                embeddings = collect_embeddings(module, mol_dict, device=device)
-                logger.info('Update nearest_neighbors ... collecting embeddings is done')
                 keys = module.construct_keys(embeddings)
                 keys = F.normalize(keys).to(device)
                 for i in range(0, keys.shape[0], 512):
-                    _, indices = torch.einsum('ik, jk -> ij', keys[i:i+512], keys).topk(65, dim=1)
+                    _, indices = torch.einsum('ik, jk -> ij', keys[i:i+512], keys).topk(args.num_neighbors, dim=1)
                     for j, neighbors in enumerate(indices.tolist()):
                         nearest_neighbors[mol_dict[i+j].smiles] = [mol_dict[k] for k in neighbors[1:]]
-
-                #_, indices = knn_search(faiss_res, keys, keys, args.num_neighbors+1)
-                #for i, nns in enumerate(indices.tolist()):
-                #    nearest_neighbors[mol_dict[i].smiles] = [mol_dict[j] for j in nns[1:]]
             logger.info('Update nearest_neighbors ... done')
-
-        if args.hard_batch:
-            hard_reactions = []
-            for rxn in reactions:
-                hard_reactions.append(rxn)
-                for mol in nearest_neighbors[reactions[0].product.smiles]:
-                    if len(product2reactions[mol.smiles]) > 0:
-                        hard_reactions.append(datasets['train'][random.choice(product2reactions[mol.smiles])])
-                if len(hard_reactions) > args.batch_size:
-                    break
-            reactions = hard_reactions
 
         # TRAINING
         optimizer.zero_grad()
@@ -149,7 +117,8 @@ def main(args):
             iteration, len(reactions), outputs['loss'].item(), outputs['acc'].item()))
 
         if iteration % args.eval_freq == 0:
-            acc, _ = evaluate(datasets['mol_dict'], datasets['val'])
+            embeddings = collect_embeddings(module, mol_dict, device=device)
+            acc, _ = evaluate(mol_dict, datasets['val'], embeddings)
             acc = acc[0]
             if best_acc < acc:
                 logger.info(f'[Iter {iteration}] [BEST {acc:.4f}]')
@@ -164,12 +133,12 @@ if __name__ == '__main__':
     add_model_arguments(parser)
     parser.add_argument('--logdir', type=str, required=True)
     parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--backward-only', action='store_true')
-    parser.add_argument('--pretrain', type=str, default=None)
-    parser.add_argument('--freeze', action='store_true')
     parser.add_argument('--datadir', type=str, default='/data/uspto/uspto50k_coley')
     parser.add_argument('--mol-dict', type=str, default='/data/uspto/uspto50k_coley')
+    parser.add_argument('--backward-only', action='store_true')
     parser.add_argument('--batch-size', type=int, default=64)
+
+    parser.add_argument('--pretrain', type=str, default=None)
     parser.add_argument('--num-iterations', type=int, default=200000)
     parser.add_argument('--optim', type=str, default='sgd')
     parser.add_argument('--schedule', type=str, default=None)
@@ -179,9 +148,6 @@ if __name__ == '__main__':
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
     parser.add_argument('--num-neighbors', type=int, default=0)
-    parser.add_argument('--update-freq', type=int, default=1000)
-    parser.add_argument('--alpha', type=float, default=0)
-    parser.add_argument('--hard-batch', action='store_true')
     args = parser.parse_args()
 
     main(args)

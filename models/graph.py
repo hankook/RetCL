@@ -5,13 +5,17 @@ import dgl
 
 class Structure2VecFirstLayer(nn.Module):
 
-    def __init__(self, num_hidden_features, num_atom_features, num_bond_features, bn_first=False):
+    def __init__(self, num_hidden_features, num_atom_features, num_bond_features, bn_first=False, dropout=0):
         super(Structure2VecFirstLayer, self).__init__()
         self.atom_layer = nn.Linear(num_atom_features, num_hidden_features)
         self.bond_layer = nn.Linear(num_bond_features, num_hidden_features)
         self.activation = nn.ReLU(inplace=True)
         self.bn = nn.BatchNorm1d(num_hidden_features)
         self.bn_first = bn_first
+        if dropout > 0:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
 
     def forward(self, g):
         g.edata['h'] = self.bond_layer(g.edata['w'])
@@ -22,12 +26,12 @@ class Structure2VecFirstLayer(nn.Module):
             h = self.bn(self.activation(h))
         else:
             h = self.activation(self.bn(h))
-        return h
+        return self.dropout(h)
 
 
 class Structure2VecLayer(nn.Module):
 
-    def __init__(self, num_hidden_features, num_atom_features, num_bond_features, bn_first=False):
+    def __init__(self, num_hidden_features, num_atom_features, num_bond_features, bn_first=False, dropout=0):
         super(Structure2VecLayer, self).__init__()
         self.bond_layer = nn.Linear(num_bond_features, num_hidden_features)
         self.hidden_layer1 = nn.Linear(num_hidden_features, num_hidden_features)
@@ -36,6 +40,10 @@ class Structure2VecLayer(nn.Module):
         self.bn1 = nn.BatchNorm1d(num_hidden_features)
         self.bn2 = nn.BatchNorm1d(num_hidden_features)
         self.bn_first = bn_first
+        if dropout > 0:
+            self.dropout = nn.Dropout(dropout)
+        else:
+            self.dropout = nn.Identity()
 
     def forward(self, g, features):
         g.edata['h'] = self.bond_layer(g.edata['w'])
@@ -53,21 +61,23 @@ class Structure2VecLayer(nn.Module):
             h = self.activation(self.bn2(self.hidden_layer2(h) + features))
         g.ndata.pop('h')
         g.edata.pop('h')
-        return h
+        return self.dropout(h)
 
 
 class Structure2Vec(nn.Module):
     
-    def __init__(self, num_layers, num_hidden_features, num_atom_features, num_bond_features, bn_first=False):
+    def __init__(self, num_layers, num_hidden_features, num_atom_features, num_bond_features, bn_first=False, dropout=0):
         super(Structure2Vec, self).__init__()
         self.first_layer = Structure2VecFirstLayer(num_hidden_features,
                                                    num_atom_features,
                                                    num_bond_features,
-                                                   bn_first=bn_first)
+                                                   bn_first=bn_first,
+                                                   dropout=dropout)
         self.layers = nn.ModuleList([Structure2VecLayer(num_hidden_features,
                                                         num_atom_features,
                                                         num_bond_features,
-                                                        bn_first=bn_first) for _ in range(num_layers)])
+                                                        bn_first=bn_first,
+                                                        dropout=dropout) for _ in range(num_layers)])
         self.bn_first = bn_first
         if bn_first:
             self.last_layer = nn.Sequential(nn.Linear(num_hidden_features, num_hidden_features),
