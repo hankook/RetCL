@@ -55,6 +55,46 @@ class GraphModule(EmbeddingModule):
     def construct_keys(self, embeddings):
         return embeddings[0]
 
+class GraphModuleV0(EmbeddingModule):
+
+    def __init__(self, encoder, *branches):
+        super(GraphModuleV0, self).__init__()
+        self.encoder = encoder
+        self.branches = nn.ModuleList(branches)
+
+    def forward(self, batch):
+        features = self.encoder(batch)
+        features = torch.split(features, batch.batch_num_nodes)
+        features, masks = pad_sequence(features)
+
+        p_queries = masked_pooling(self.branches[0](features), masks, mode='mean')
+        r_queries = masked_pooling(self.branches[1](features), masks, mode='mean')
+        keys      = masked_pooling(self.branches[2](features), masks, mode='mean')
+
+        return [keys, p_queries, r_queries]
+
+    def construct_queries(self, products, reactants, embeddings):
+        if len(embeddings) == 3:
+            keys, p_queries, r_queries = embeddings
+        else:
+            keys, p_queries, r_queries, r2_queries = embeddings
+        queries = []
+        for p_idx, r_indices in zip(products, reactants):
+            if p_idx is None:
+                q = r_queries[r_indices].sum(0)
+            elif len(r_indices) > 0:
+                if len(embeddings) == 3:
+                    q = p_queries[p_idx] - r_queries[r_indices].sum(0)
+                else:
+                    q = p_queries[p_idx] - r2_queries[r_indices].sum(0)
+            else:
+                q = p_queries[p_idx]
+            queries.append(q)
+        return torch.stack(queries, 0)
+
+    def construct_keys(self, embeddings):
+        return embeddings[0]
+
 class GraphModuleV2(EmbeddingModule):
 
     def __init__(self, base_encoder, p_encoder, r_encoder, *query_fn):

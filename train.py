@@ -41,7 +41,10 @@ def main(args):
         module.load_state_dict(ckpt['module'], strict=False)
 
     ### LOSS
-    sim_fn = AttentionSimilarity()
+    if args.module == 'v1':
+        sim_fn = AttentionSimilarity()
+    elif args.module == 'v0':
+        sim_fn = CosineSimilarity()
     loss_fn = SimCLR(sim_fn, args.tau).to(device)
 
     ### OPTIMIZER

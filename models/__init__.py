@@ -5,7 +5,6 @@ import logging
 import torch.nn as nn
 
 from .utils import *
-from .sequence import *
 from .graph import *
 from .contrast import *
 from .module import *
@@ -77,6 +76,12 @@ def load_module(args):
         query_fn = [MultiAttentionQuery(num_hidden_features, K) for _ in range(num_branches)]
 
         module = GraphModule(encoder, *query_fn)
+        module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
+    elif name == 'v0':
+        encoder = load_encoder(args)
+        branches = [ResidualLayer(num_hidden_features) for _ in range(3)]
+
+        module = GraphModuleV0(encoder, *branches)
         module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
     elif name == 'v2':
         encoder = Structure2Vec(num_layers=num_layers,

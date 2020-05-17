@@ -94,8 +94,8 @@ def create_retrosynthesis_evaluator(
         device=None,
         verbose=False,
         chunk_size=200000,
-        max_idx=-1,
-        forward=True):
+        score_fn=None,
+        max_idx=-1):
 
     if verbose:
         logger = logging.getLogger('eval')
@@ -141,7 +141,17 @@ def create_retrosynthesis_evaluator(
                     predictions, scores = zip(*sorted(new_predictions, key=lambda x: -x[1]))
                     predictions, scores = predictions[:beam], scores[:beam]
 
-                final_predictions = sorted(final_predictions, key=lambda x: -x[1]/(len(x[0])+1))
+                if score_fn is not None and len(final_predictions) > 0:
+                    final_reactions = [Reaction(
+                        product=reaction.product,
+                        reactants=[mol_dict[i] for i in pred],
+                        label=reaction.label) for pred, _ in final_predictions]
+                    scores = score_fn(final_reactions)
+                    final_predictions = [(pred, score) for (pred, _), score in zip(final_predictions, scores)]
+                    final_predictions = sorted(final_predictions, key=lambda x: -x[1])
+                else:
+                    final_predictions = sorted(final_predictions,
+                                               key=lambda x: -x[1]/(len(x[0])+1))
                 correct = False
                 all_predictions.append(final_predictions)
                 for k, (pred, score) in enumerate(final_predictions[:best]):
@@ -204,7 +214,10 @@ def create_retrosynthesis_score_evaluator(
             b_scores = torch.split(b_scores, [(x+1)*math.factorial(x) for x in lengths])
             b_scores = torch.stack([x.view(-1, l+1).sum(1).max(0)[0] for x, l in zip(b_scores, lengths)], 0)
 
-            return f_scores + b_scores
+            if forward:
+                return [s / (l+2) for s, l in zip((f_scores+b_scores).tolist(), lengths)]
+            else:
+                return [s / (l+1) for s, l in zip(b_scores.tolist(), lengths)]
 
     return evaluate
 

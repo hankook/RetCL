@@ -10,12 +10,14 @@ class ResidualLayer(nn.Module):
         self.linear2 = nn.Linear(num_hidden_features, num_hidden_features)
         self.bn1 = nn.BatchNorm1d(num_hidden_features)
         self.bn2 = nn.BatchNorm1d(num_hidden_features)
-        self.activation = nn.ReLU(inplace=True)
+        self.activation = nn.ReLU()
 
-    def forward(self, g, in_features):
-        out_features = self.activation(self.bn1(self.linear1(in_features)))
-        out_features = self.activation(self.bn2(self.linear2(out_features)))+in_features
-        return out_features
+    def forward(self, in_features):
+        N, T, D = in_features.shape
+        in_features = in_features.view(N*T, D)
+        out_features = self.bn1(self.linear1(self.activation(in_features)))
+        out_features = self.bn2(self.linear2(self.activation(out_features))) + in_features
+        return out_features.view(N, T, D)
 
 
 class MultiAttentionQuery(nn.Module):

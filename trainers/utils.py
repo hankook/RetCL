@@ -22,7 +22,7 @@ def convert_tensor(inputs, device=None, detach=True):
 
 
 def collect_embeddings(module, mol_dict, batch_size=512, cpu=True, device=None):
-    logging.info('Collect embeddings ...')
+    logger.info('Collect embeddings ...')
     module.eval()
     with torch.no_grad():
         dataloader = build_dataloader(mol_dict, batch_size=batch_size)
@@ -38,7 +38,7 @@ def collect_embeddings(module, mol_dict, batch_size=512, cpu=True, device=None):
                 embeddings = [torch.cat(e, 0) for e in zip(*embeddings)]
             else:
                 embeddings = torch.cat(embeddings, 0)
-    logging.info('Collect embeddings ... done')
+    logger.info('Collect embeddings ... done')
     return embeddings
 
 
