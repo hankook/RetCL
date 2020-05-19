@@ -12,7 +12,6 @@ def load_reaction_dataset(datadir):
     for split in ['train', 'val', 'test']:
         datasets[split] = ReactionDataset.load(os.path.join(datadir, f'cache.{split}'))
         logger.info('- {} reactions in {} split'.format(len(datasets[split]), split))
-    datasets['mol_dict'] = load_molecule_dict(datadir)
     return datasets
 
 def load_molecule_dict(datadir):

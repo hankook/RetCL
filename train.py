@@ -28,7 +28,6 @@ def main(args):
     ### DATASETS
     datasets = load_reaction_dataset(args.datadir)
     mol_dict = load_molecule_dict(args.mol_dict)
-    check_molecule_dict(datasets['mol_dict'], datasets)
     check_molecule_dict(mol_dict, datasets)
 
     ### DATALOADERS
