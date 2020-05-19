@@ -14,7 +14,7 @@ from options import add_model_arguments
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
 
-def compute_accuracy(true_reaction, pred_reactions):
+def compute_accuracy(true_reaction, pred_reactions, max_len=None):
     correct = False
     corrects = []
     target = set([mol.smiles for mol in true_reaction.reactants])
@@ -23,7 +23,16 @@ def compute_accuracy(true_reaction, pred_reactions):
         if pred == target:
             correct = True
         corrects.append(correct)
-    return corrects
+    if max_len is not None and max_len > len(corrects):
+        if len(corrects) > 0:
+            corrects = corrects + [corrects[-1]] * (max_len-len(corrects))
+        else:
+            corrects = [False] * max_len
+
+    if max_len is not None:
+        return corrects[:max_len]
+    else:
+        return corrects
 
 def main(args):
     utils.set_logging_options(None)
@@ -38,6 +47,8 @@ def main(args):
     ### SIMILARITY FUNCTION
     if args.module == 'v5':
         sim_fn = MultiAttentionSimilarity()
+    elif args.module == 'v0':
+        sim_fn = CosineSimilarity()
     else:
         sim_fn = AttentionSimilarity()
 
@@ -46,6 +57,8 @@ def main(args):
 
     original_corrects = torch.zeros(args.max_preds)
     resorted_corrects = torch.zeros(args.max_preds)
+    filtered_corrects = torch.zeros(args.max_preds)
+    filtered_corrects2 = torch.zeros(args.max_preds)
     random_corrects   = torch.zeros(args.max_preds)
     with open(args.pred) as f:
         reader = iter(f)
@@ -82,27 +95,41 @@ def main(args):
                     reactants=reactants,
                     label=None))
 
-            original_corrects[:len(reactions)] += torch.tensor(compute_accuracy(true_reaction, reactions)).float()
+            original_corrects += torch.tensor(compute_accuracy(true_reaction, reactions, max_len=args.max_preds)).float()
 
-            scores = evaluate(reactions)
-            resorted_reactions = sorted(list(zip(reactions, scores.tolist())), key=lambda x: -x[1][0])
-            resorted_reactions = list(zip(*resorted_reactions))[0]
-            resorted_corrects[:len(reactions)] += torch.tensor(compute_accuracy(true_reaction, resorted_reactions)).float()
+            if len(reactions) > 0:
+                scores = evaluate(reactions)
+                resorted_reactions = sorted(list(zip(reactions, scores)), key=lambda x: -x[1])
+                resorted_reactions = list(zip(*resorted_reactions))[0]
+                resorted_corrects += torch.tensor(compute_accuracy(true_reaction, resorted_reactions, max_len=args.max_preds)).float()
+            else:
+                scores = []
+
+            filtered_reactions = [rxn for rxn, score in zip(reactions, scores) if score > 0.7]
+            filtered_corrects += torch.tensor(compute_accuracy(true_reaction, filtered_reactions, max_len=args.max_preds)).float()
+
+            filtered_reactions2 = [rxn for rxn, score in zip(reactions, scores) if score > 0.5]
+            filtered_corrects2 += torch.tensor(compute_accuracy(true_reaction, filtered_reactions2, max_len=args.max_preds)).float()
 
             random_reactions = random.sample(reactions, len(reactions))
-            random_corrects[:len(reactions)] += torch.tensor(compute_accuracy(true_reaction, random_reactions)).float()
+            random_corrects += torch.tensor(compute_accuracy(true_reaction, random_reactions, max_len=args.max_preds)).float()
 
-            logger.info('[# of reactions: {}] [original {:.4f}] [resorted {:.4f}] [random {:.4f}]'.format(
+            logger.info('[# of reactions: {}] [original {:.4f}] [resorted {:.4f}] [filtered>0.7 {:.4f}] [filtered>0.5 {:.4f}] [random {:.4f}]'.format(
                 counter,
                 original_corrects[0] / counter,
                 resorted_corrects[0] / counter,
+                filtered_corrects[0] / counter,
+                filtered_corrects2[0] / counter,
                 random_corrects[0] / counter))
 
     logger.info('# of reactions', counter)
-    logger.info(' K   original   resorted |')
-    for k, (acc1, acc2) in enumerate(zip(original_corrects.div(counter).tolist(),
-                                         resorted_corrects.div(counter).tolist())):
-        logger.info('{:2d}   {:8.4f}   {:8.4f}'.format(k, acc1, acc2))
+    logger.info(' K   original   resorted    filtered (0.7, 0.5)')
+    for k, (acc1, acc2, acc3, acc4) in enumerate(zip(original_corrects.div(counter).tolist(),
+                                                     resorted_corrects.div(counter).tolist(),
+                                                     filtered_corrects.div(counter).tolist(),
+                                                     filtered_corrects2.div(counter).tolist(),
+                                                     )):
+        logger.info('{:2d}   {:8.3f}   {:8.3f}   {:8.3f}   {:8.3f}'.format(k, acc1, acc2, acc3, acc4))
 
 
 if __name__ == '__main__':

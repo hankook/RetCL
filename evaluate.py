@@ -40,10 +40,13 @@ def main(args):
         sim_fn = AttentionSimilarity()
 
     ### EVALUATOR
-    score_fn = create_retrosynthesis_score_evaluator(module,
-                                                     sim_fn,
-                                                     device=device,
-                                                     forward=not args.backward_only)
+    if args.use_score:
+        score_fn = create_retrosynthesis_score_evaluator(module,
+                                                         sim_fn,
+                                                         device=device,
+                                                         forward=not args.backward_only)
+    else:
+        score_fn = None
     evaluate = create_retrosynthesis_evaluator(module,
                                                sim_fn,
                                                device=device,
@@ -70,6 +73,7 @@ if __name__ == '__main__':
     parser.add_argument('--backward-only', action='store_true')
     parser.add_argument('--beam', type=int, default=5)
     parser.add_argument('--best', type=int, default=5)
+    parser.add_argument('--use-score', action='store_true')
     args = parser.parse_args()
 
     main(args)
