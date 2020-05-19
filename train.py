@@ -30,6 +30,9 @@ def main(args):
     mol_dict = load_molecule_dict(args.mol_dict)
     check_molecule_dict(mol_dict, datasets)
 
+    if args.augment is not None:
+        datasets['aug'] = load_reaction_dataset(args.augment)
+
     ### DATALOADERS
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
 
@@ -108,6 +111,11 @@ def main(args):
         optimizer.zero_grad()
         outputs = train_step(reactions)
         outputs['loss'].backward()
+        if args.augment is not None:
+            aug_reactions = random.sample(list(range(len(datasets['aug']))), args.batch_size)
+            aug_reactions = [datasets['aug'][idx] for idx in aug_reactions]
+            aug_outputs = train_step(aug_reactions)
+            aug_outputs['loss'].mul(0.1).backward()
         if args.clip is not None:
             torch.nn.utils.clip_grad_norm_(params, args.clip)
         optimizer.step()
@@ -149,6 +157,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', type=float, default=1e-5)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
+    parser.add_argument('--augment', type=str, default=None)
     parser.add_argument('--num-neighbors', type=int, default=0)
     args = parser.parse_args()
 
