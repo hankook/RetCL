@@ -31,7 +31,10 @@ def main(args):
     check_molecule_dict(mol_dict, datasets)
 
     if args.augment is not None:
-        datasets['aug'] = load_reaction_dataset(args.augment)
+        from datasets import ReactionDataset
+        datasets['aug'] = ReactionDataset.load(args.augment)
+        logger.info('Loading Augmented ReactionDataset ...')
+        logger.info('- {} reactions'.format(len(datasets['aug'])))
 
     ### DATALOADERS
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
