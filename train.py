@@ -70,7 +70,7 @@ def main(args):
 
     ### TRAINING
     if args.resume:
-        ckpt = torch.load(os.path.join(args.logdir, 'best.pth'), map_location='cpu')
+        ckpt = torch.load(os.path.join(args.logdir, 'last.pth'), map_location='cpu')
         module.load_state_dict(ckpt['module'])
         optimizer.load_state_dict(ckpt['optim'])
         iteration = ckpt['iteration']
@@ -100,7 +100,7 @@ def main(args):
                 keys = module.construct_keys(embeddings)
                 keys = F.normalize(keys).to(device)
                 for i in range(0, keys.shape[0], 512):
-                    _, indices = torch.einsum('ik, jk -> ij', keys[i:i+512], keys).topk(args.num_neighbors, dim=1)
+                    _, indices = torch.einsum('ik, jk -> ij', keys[i:i+512], keys).topk(args.num_neighbors+1, dim=1)
                     for j, neighbors in enumerate(indices.tolist()):
                         nearest_neighbors[mol_dict[i+j].smiles] = [mol_dict[k] for k in neighbors[1:]]
             logger.info('Update nearest_neighbors ... done')
