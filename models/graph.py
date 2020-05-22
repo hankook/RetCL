@@ -68,6 +68,7 @@ class Structure2Vec(nn.Module):
     
     def __init__(self, num_layers, num_hidden_features, num_atom_features, num_bond_features, bn_first=False, dropout=0):
         super(Structure2Vec, self).__init__()
+        self.num_hidden_features = num_hidden_features
         self.first_layer = Structure2VecFirstLayer(num_hidden_features,
                                                    num_atom_features,
                                                    num_bond_features,

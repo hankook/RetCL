@@ -40,12 +40,14 @@ def create_retrosynthesis_trainer(
 
         products, reactants = [], []
         positive_indices, ignore_indices = [], []
+        labels = []
         if forward:
             for r in reactions:
                 products.append(None)
                 reactants.append(r.reactants)
                 positive_indices.append(r.product)
                 ignore_indices.append(r.reactants)
+                labels.append(r.label)
 
         for r in permuted_reactions:
             for i in range(len(r.reactants)+1):
@@ -56,9 +58,12 @@ def create_retrosynthesis_trainer(
                 else:
                     positive_indices.append(-1)
                 ignore_indices.append(r.product)
+                labels.append(r.label+10)
+
+        labels = torch.tensor(labels).to(device)
 
         embeddings = module(graphs)
-        queries = module.construct_queries(products, reactants, embeddings)
+        queries = module.construct_queries(products, reactants, embeddings, labels=labels)
         keys = module.construct_keys(embeddings)
         keys = torch.cat([keys, module.halt_keys], 0)
 
@@ -118,7 +123,8 @@ def create_retrosynthesis_evaluator(
                 predictions = [[]]
                 scores = [0.]
                 for _ in range(4):
-                    queries = module.construct_queries([p_idx]*len(predictions), predictions, embeddings)
+                    labels = torch.tensor([reaction.label+10]*len(predictions)).to(device)
+                    queries = module.construct_queries([p_idx]*len(predictions), predictions, embeddings, labels=labels)
                     similarities = []
                     for i in range(0, keys.shape[0], chunk_size):
                         similarities.append(sim_fn(queries, keys[i:i+chunk_size]).detach())
@@ -160,6 +166,10 @@ def create_retrosynthesis_evaluator(
                     if correct:
                         num_corrects[k] += 1
 
+                for k in range(len(final_predictions[:best]), best):
+                    if correct:
+                        num_corrects[k] += 1
+
                 if verbose:
                     logger.info('Evaluate reactions ... {} / {}'.format(n, len(dataset)))
 
@@ -183,12 +193,14 @@ def create_retrosynthesis_score_evaluator(
 
             products, reactants = [], []
             positive_indices, ignore_indices = [], []
+            labels = []
             if forward:
                 for r in reactions:
                     products.append(None)
                     reactants.append(r.reactants)
                     positive_indices.append(r.product)
                     ignore_indices.append(r.reactants)
+                    labels.append(r.label)
 
             for r in permuted_reactions:
                 for i in range(len(r.reactants)+1):
@@ -199,9 +211,12 @@ def create_retrosynthesis_score_evaluator(
                     else:
                         positive_indices.append(-1)
                     ignore_indices.append(r.product)
+                    labels.append(r.label+10)
+
+            labels = torch.tensor(labels).to(device)
 
             embeddings = module(graphs)
-            queries = module.construct_queries(products, reactants, embeddings)
+            queries = module.construct_queries(products, reactants, embeddings, labels=labels)
             keys = module.construct_keys(embeddings)
             keys = torch.cat([keys, module.halt_keys], 0)
 

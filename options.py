@@ -7,3 +7,4 @@ def add_model_arguments(parser):
     parser.add_argument('--K', type=int, default=2)
     parser.add_argument('--bn-first', action='store_true')
     parser.add_argument('--dropout', type=float, default=0)
+    parser.add_argument('--use-label', action='store_true')

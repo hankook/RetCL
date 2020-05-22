@@ -57,10 +57,14 @@ class GraphModule(EmbeddingModule):
 
 class GraphModuleV0(EmbeddingModule):
 
-    def __init__(self, encoder, *branches):
+    def __init__(self, encoder, *branches, use_label=False):
         super(GraphModuleV0, self).__init__()
         self.encoder = encoder
         self.branches = nn.ModuleList(branches)
+        self.use_label = use_label
+        if use_label:
+            self.bias = nn.Embedding(20, encoder.num_hidden_features)
+            self.bias.weight.data.zero_()
 
     def forward(self, batch):
         features = self.encoder(batch)
@@ -73,7 +77,7 @@ class GraphModuleV0(EmbeddingModule):
 
         return [keys, p_queries, r_queries]
 
-    def construct_queries(self, products, reactants, embeddings):
+    def construct_queries(self, products, reactants, embeddings, labels=None):
         if len(embeddings) == 3:
             keys, p_queries, r_queries = embeddings
         else:
@@ -90,7 +94,10 @@ class GraphModuleV0(EmbeddingModule):
             else:
                 q = p_queries[p_idx]
             queries.append(q)
-        return torch.stack(queries, 0)
+        if labels is None or not self.use_label:
+            return torch.stack(queries, 0)
+        else:
+            return torch.stack(queries, 0) + self.bias(labels-1)
 
     def construct_keys(self, embeddings):
         return embeddings[0]
