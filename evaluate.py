@@ -18,6 +18,8 @@ device = torch.device('cuda:0')
 def main(args):
     utils.set_logging_options(None)
     logger = logging.getLogger('eval')
+    logger.info(' '.join(os.sys.argv))
+    logger.info(args)
 
     ### DATASETS
     datasets = load_reaction_dataset(args.datadir)
@@ -54,7 +56,7 @@ def main(args):
                                                best=args.best, beam=args.beam,
                                                score_fn=score_fn)
     embeddings = collect_embeddings(module, mol_dict, device=device)
-    topk_acc, _ = evaluate(mol_dict, datasets['test'], embeddings)
+    topk_acc, predictions = evaluate(mol_dict, datasets['test'], embeddings)
     logger.info('  K    ACC')
     for k, acc in enumerate(topk_acc):
         logger.info('{:3d}  {:.4f}'.format(k+1, acc))
@@ -62,6 +64,18 @@ def main(args):
     logger.info(' '.join(os.sys.argv))
     logger.info(args)
 
+    if args.output_file is not None:
+        if os.path.exists(args.output_file):
+            logger.info(f'{args.output_file} exists ...')
+        else:
+            logger.info(f'writing predictions into {args.output_file} ...')
+            with open(args.output_file, 'w') as f:
+                for rxn, preds in zip(datasets['test'], predictions):
+                    f.write('UNK {}>>{} {}\n'.format('.'.join([m.smiles for m in rxn.reactants]),
+                                                     rxn.product.smiles,
+                                                     len(preds)))
+                    for p in preds:
+                        f.write('UNK {}\n'.format('.'.join([mol_dict[i].smiles for i in p[0]])))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -74,6 +88,7 @@ if __name__ == '__main__':
     parser.add_argument('--beam', type=int, default=5)
     parser.add_argument('--best', type=int, default=5)
     parser.add_argument('--use-score', action='store_true')
+    parser.add_argument('--output-file', type=str, default=None)
     args = parser.parse_args()
 
     main(args)

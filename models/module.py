@@ -57,11 +57,12 @@ class GraphModule(EmbeddingModule):
 
 class GraphModuleV0(EmbeddingModule):
 
-    def __init__(self, encoder, *branches, use_label=False):
+    def __init__(self, encoder, *branches, use_label=False, use_sum=False):
         super(GraphModuleV0, self).__init__()
         self.encoder = encoder
         self.branches = nn.ModuleList(branches)
         self.use_label = use_label
+        self.use_sum = use_sum
         if use_label:
             self.bias = nn.Embedding(20, encoder.num_hidden_features)
             self.bias.weight.data.zero_()
@@ -71,9 +72,10 @@ class GraphModuleV0(EmbeddingModule):
         features = torch.split(features, batch.batch_num_nodes)
         features, masks = pad_sequence(features)
 
-        p_queries = masked_pooling(self.branches[0](features), masks, mode='mean')
-        r_queries = masked_pooling(self.branches[1](features), masks, mode='mean')
-        keys      = masked_pooling(self.branches[2](features), masks, mode='mean')
+        mode = 'sum' if self.use_sum else 'mean'
+        p_queries = masked_pooling(self.branches[0](features), masks, mode=mode)
+        r_queries = masked_pooling(self.branches[1](features), masks, mode=mode)
+        keys      = masked_pooling(self.branches[2](features), masks, mode=mode)
 
         return [keys, p_queries, r_queries]
 
@@ -97,7 +99,7 @@ class GraphModuleV0(EmbeddingModule):
         if labels is None or not self.use_label:
             return torch.stack(queries, 0)
         else:
-            return torch.stack(queries, 0) + self.bias(labels-1)
+            return torch.stack(queries, 0) + self.bias(labels-1).mul(10)
 
     def construct_keys(self, embeddings):
         return embeddings[0]

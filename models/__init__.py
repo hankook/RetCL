@@ -81,7 +81,7 @@ def load_module(args):
         encoder = load_encoder(args)
         branches = [ResidualLayer(num_hidden_features) for _ in range(3)]
 
-        module = GraphModuleV0(encoder, *branches, use_label=args.use_label)
+        module = GraphModuleV0(encoder, *branches, use_label=args.use_label, use_sum=args.use_sum)
         module.halt_keys = nn.Parameter(torch.randn(num_halt_keys, 256))
     elif name == 'v2':
         encoder = Structure2Vec(num_layers=num_layers,

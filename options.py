@@ -8,3 +8,4 @@ def add_model_arguments(parser):
     parser.add_argument('--bn-first', action='store_true')
     parser.add_argument('--dropout', type=float, default=0)
     parser.add_argument('--use-label', action='store_true')
+    parser.add_argument('--use-sum', action='store_true')
