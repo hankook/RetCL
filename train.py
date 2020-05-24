@@ -6,7 +6,7 @@ import torch.optim as optim
 
 import utils
 from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader, check_molecule_dict
-from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator
+from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator, create_retrosynthesis_score_evaluator
 from trainers.utils import collect_embeddings
 from models import load_module
 from models.similarity import *
@@ -71,7 +71,14 @@ def main(args):
                                                nearest_neighbors=nearest_neighbors,
                                                num_neighbors=args.num_neighbors,
                                                device=device)
-    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device)
+    if args.use_score:
+        score_fn = create_retrosynthesis_score_evaluator(module,
+                                                         sim_fn,
+                                                         device=device,
+                                                         forward=not args.backward_only)
+    else:
+        score_fn = None
+    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, beam=args.beam, score_fn=score_fn)
 
     ### TRAINING
     if args.resume:
@@ -162,6 +169,8 @@ if __name__ == '__main__':
     parser.add_argument('--eval-freq', type=int, default=1000)
     parser.add_argument('--augment', type=str, default=None)
     parser.add_argument('--num-neighbors', type=int, default=0)
+    parser.add_argument('--beam', type=int, default=1)
+    parser.add_argument('--use-score', action='store_true')
     args = parser.parse_args()
 
     main(args)
