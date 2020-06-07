@@ -15,7 +15,10 @@ def uspto50k(datadir):
                 r, _, p = row['reactants>reagents>production'].split('>')
                 reactants = [molecule_dict.add(x) for x in r.split('.')]
                 product = molecule_dict.add(p)
-                label = int(row['class'])
+                try:
+                    label = int(row['class'])
+                except:
+                    label = 0
                 reaction_dataset.add(Reaction(reactants, product, label))
 
                 print(split, i+1, 'reactions ...', end='\r')
@@ -59,6 +62,31 @@ def uspto_large2(datadir):
 
     molecule_dict.save(os.path.join(datadir, 'cache.molecule_dict'))
 
+def uspto_multi(datadir):
+    molecule_dict = MoleculeDict()
+    print('preprocessing USPTO-multi ...')
+    for split in ['train']:
+        reaction_dataset = ReactionDataset()
+        with open(os.path.join(datadir, 'raw_{}.csv'.format(split))) as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                r, _, p = row['reactants>reagents>production'].split('>')
+                if len(r) == 0 or len(p) == 0:
+                    continue
+                reactants = [molecule_dict.add(x) for x in r.split('.')]
+                product = molecule_dict.add(p)
+                label = 0
+                reaction_dataset.add(Reaction(reactants, product, label))
+
+                print(split, i+1, 'reactions ...', end='\r')
+            print()
+
+        cachefile = os.path.join(datadir, f'cache.{split}')
+        reaction_dataset.save(cachefile)
+
+    # print(len(molecule_dict), 'unique molecules ...')
+    # molecule_dict.save(os.path.join(datadir, 'cache.molecule_dict'))
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True)
@@ -71,6 +99,8 @@ if __name__ == '__main__':
         uspto_large(args.datadir)
     elif args.dataset == 'uspto-large2':
         uspto_large2(args.datadir)
+    elif args.dataset == 'uspto-multi':
+        uspto_multi(args.datadir)
     else:
         raise Exception(f'Unknown dataset: {args.dataset}')
 

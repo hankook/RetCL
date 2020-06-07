@@ -70,11 +70,13 @@ def main(args):
                                                forward=not args.backward_only,
                                                nearest_neighbors=nearest_neighbors,
                                                num_neighbors=args.num_neighbors,
+                                               reduction=args.reduction,
                                                device=device)
     if args.use_score:
         score_fn = create_retrosynthesis_score_evaluator(module,
                                                          sim_fn,
                                                          device=device,
+                                                         reduction=args.reduction,
                                                          forward=not args.backward_only)
     else:
         score_fn = None
@@ -159,7 +161,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=64)
 
     parser.add_argument('--pretrain', type=str, default=None)
-    parser.add_argument('--num-iterations', type=int, default=200000)
+    parser.add_argument('--num-iterations', type=int, default=100000)
     parser.add_argument('--optim', type=str, default='sgd')
     parser.add_argument('--schedule', type=str, default=None)
     parser.add_argument('--clip', type=float, default=5.0)
@@ -171,6 +173,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-neighbors', type=int, default=0)
     parser.add_argument('--beam', type=int, default=1)
     parser.add_argument('--use-score', action='store_true')
+    parser.add_argument('--reduction', type=str, default=None)
     args = parser.parse_args()
 
     main(args)

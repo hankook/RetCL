@@ -6,10 +6,10 @@ from .reaction import Reaction, ReactionDataset
 
 logger = logging.getLogger('data')
 
-def load_reaction_dataset(datadir):
+def load_reaction_dataset(datadir, splits=['train', 'val', 'test']):
     datasets = {}
     logger.info('Loading ReactionDataset ...')
-    for split in ['train', 'val', 'test']:
+    for split in splits:
         datasets[split] = ReactionDataset.load(os.path.join(datadir, f'cache.{split}'))
         logger.info('- {} reactions in {} split'.format(len(datasets[split]), split))
     return datasets

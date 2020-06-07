@@ -22,9 +22,17 @@ def main(args):
     logger.info(args)
 
     ### DATASETS
-    datasets = load_reaction_dataset(args.datadir)
+    datasets = load_reaction_dataset(args.datadir, ['test'])
     mol_dict = load_molecule_dict(args.mol_dict)
-    check_molecule_dict(mol_dict, datasets)
+    try:
+        check_molecule_dict(mol_dict, datasets)
+    except:
+        max_idx = len(mol_dict)
+        for d in datasets.values():
+            for rxn in d:
+                mol_dict.add(rxn.product)
+                for reactant in rxn.reactants:
+                    mol_dict.add(reactant)
 
     ### MODELS
     module = load_module(args).to(device)
@@ -54,12 +62,13 @@ def main(args):
                                                device=device,
                                                verbose=True,
                                                best=args.best, beam=args.beam,
-                                               score_fn=score_fn)
+                                               score_fn=score_fn,
+                                               remove_duplicate=args.remove_duplicate)
     embeddings = collect_embeddings(module, mol_dict, device=device)
     topk_acc, predictions = evaluate(mol_dict, datasets['test'], embeddings)
     logger.info('  K    ACC')
     for k, acc in enumerate(topk_acc):
-        logger.info('{:3d}  {:.4f}'.format(k+1, acc))
+        logger.info('{:3d}  {:.3f}'.format(k+1, acc))
 
     logger.info(' '.join(os.sys.argv))
     logger.info(args)
@@ -89,6 +98,7 @@ if __name__ == '__main__':
     parser.add_argument('--best', type=int, default=5)
     parser.add_argument('--use-score', action='store_true')
     parser.add_argument('--output-file', type=str, default=None)
+    parser.add_argument('--remove-duplicate', action='store_true')
     args = parser.parse_args()
 
     main(args)

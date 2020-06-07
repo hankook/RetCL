@@ -22,6 +22,7 @@ def permute_reactions(reactions):
 def create_retrosynthesis_trainer(
         module,
         loss_fn,
+        reduction=None,
         forward=True,
         nearest_neighbors=None,
         num_neighbors=None,
@@ -76,7 +77,10 @@ def create_retrosynthesis_trainer(
             b_losses, b_corrects = losses, corrects
         b_losses   = torch.split(b_losses,   [(x+1)*math.factorial(x) for x in lengths])
         b_corrects = torch.split(b_corrects, [(x+1)*math.factorial(x) for x in lengths])
-        b_losses   = torch.stack([x.view(-1, l+1).sum(1).min(0)[0] for x, l in zip(b_losses,   lengths)], 0)
+        if reduction == 'sum':
+            b_losses   = torch.stack([x.view(-1, l+1).sum(1).mul(-1).logsumexp(0).mul(-1) for x, l in zip(b_losses,   lengths)], 0)
+        else:
+            b_losses   = torch.stack([x.view(-1, l+1).sum(1).min(0)[0] for x, l in zip(b_losses,   lengths)], 0)
         b_corrects = torch.stack([x.view(-1, l+1).all(1).any(0)    for x, l in zip(b_corrects, lengths)], 0)
 
         if forward:
@@ -100,6 +104,7 @@ def create_retrosynthesis_evaluator(
         verbose=False,
         chunk_size=200000,
         score_fn=None,
+        remove_duplicate=False,
         max_idx=-1):
 
     if verbose:
@@ -145,9 +150,20 @@ def create_retrosynthesis_evaluator(
                     if len(new_predictions) == 0:
                         break
                     predictions, scores = zip(*sorted(new_predictions, key=lambda x: -x[1]))
+                    if remove_duplicate:
+                        check = set()
+                        _predictions = []
+                        _scores = []
+                        for i in range(len(predictions)):
+                            k = '.'.join([str(x) for x in sorted(predictions[i])])
+                            if k not in check:
+                                check.add(k)
+                                _predictions.append(predictions[i])
+                                _scores.append(scores[i])
+                        predictions, scores = _predictions, _scores
                     predictions, scores = predictions[:beam], scores[:beam]
 
-                if score_fn is not None and len(final_predictions) > 0:
+                if score_fn is not None and len(final_predictions) > 0 and beam > 1:
                     final_reactions = [Reaction(
                         product=reaction.product,
                         reactants=[mol_dict[i] for i in pred],
@@ -159,19 +175,28 @@ def create_retrosynthesis_evaluator(
                     final_predictions = sorted(final_predictions,
                                                key=lambda x: -x[1]/(len(x[0])+1))
                 correct = False
-                all_predictions.append(final_predictions)
+                all_predictions.append([])
+                prev = None
+                k2 = 0
                 for k, (pred, score) in enumerate(final_predictions[:best]):
-                    if set(pred) == set(targets):
+                    if remove_duplicate and sorted(pred) == prev:
+                        continue
+
+                    all_predictions[-1].append((pred, score))
+                    if sorted(pred) == sorted(targets):
                         correct = True
                     if correct:
-                        num_corrects[k] += 1
+                        num_corrects[k2] += 1
+                    k2 += 1
 
-                for k in range(len(final_predictions[:best]), best):
+                    prev = sorted(pred)
+
+                for k in range(k2, best):
                     if correct:
                         num_corrects[k] += 1
 
                 if verbose:
-                    logger.info('Evaluate reactions ... {} / {}'.format(n, len(dataset)))
+                    logger.info('Evaluate reactions ... {} / {} (Top1: {:.3f})'.format(n, len(dataset), num_corrects[0] / (n+1)))
 
         return [c / len(dataset) for c in num_corrects], all_predictions
 
@@ -181,6 +206,7 @@ def create_retrosynthesis_score_evaluator(
         module,
         sim_fn,
         forward=True,
+        reduction=None,
         device=None):
 
     def evaluate(reactions):
@@ -227,7 +253,10 @@ def create_retrosynthesis_score_evaluator(
                 f_scores, b_scores = 0, scores
 
             b_scores = torch.split(b_scores, [(x+1)*math.factorial(x) for x in lengths])
-            b_scores = torch.stack([x.view(-1, l+1).sum(1).max(0)[0] for x, l in zip(b_scores, lengths)], 0)
+            if reduction == 'sum':
+                b_scores = torch.stack([x.view(-1, l+1).sum(1).logsumexp(0) for x, l in zip(b_scores, lengths)], 0)
+            else:
+                b_scores = torch.stack([x.view(-1, l+1).sum(1).max(0)[0] for x, l in zip(b_scores, lengths)], 0)
 
             if forward:
                 return [s / (l+2) for s, l in zip((f_scores+b_scores).tolist(), lengths)]

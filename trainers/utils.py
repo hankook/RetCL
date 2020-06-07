@@ -6,6 +6,8 @@ from datasets import MoleculeDict, Reaction, build_dataloader
 
 logger = logging.getLogger('trainers.utils')
 
+cpu_device = torch.device('cpu')
+
 def convert_tensor(inputs, device=None, detach=True):
     if isinstance(inputs, list):
         return list(convert_tensor(x, device=device, detach=detach) for x in inputs)
@@ -53,7 +55,7 @@ def prepare_reactions(reactions, nearest_neighbors=None, num_neighbors=None, dev
             for mol in nearest_neighbors[molecule_dict[i].smiles][:num_neighbors]:
                 molecule_dict.add(mol)
 
-    graphs = dgl.batch([m.graph for m in molecule_dict])
+    graphs = dgl.batch([m.graph.to(cpu_device) for m in molecule_dict])
     if device is not None:
         graphs = graphs.to(device)
     converted_reactions = []
@@ -67,7 +69,7 @@ def prepare_reactions(reactions, nearest_neighbors=None, num_neighbors=None, dev
 
 
 def prepare_molecules(molecules, device=None):
-    graphs = dgl.batch([m.graph for m in molecules])
+    graphs = dgl.batch([m.graph.to(cpu_device) for m in molecules])
     if device is not None:
         graphs = graphs.to(device)
     return graphs
