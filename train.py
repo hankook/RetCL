@@ -3,15 +3,22 @@ from collections import defaultdict
 
 import torch, dgl
 import torch.optim as optim
+import torch.nn.functional as F
 
 import utils
-from datasets import load_reaction_dataset, load_molecule_dict, build_dataloader, check_molecule_dict
-from trainers.retrosynthesis import create_retrosynthesis_trainer, create_retrosynthesis_evaluator, create_retrosynthesis_score_evaluator
+from datasets import (
+        load_reaction_dataset,
+        load_molecule_dict,
+        build_dataloader,
+        check_molecule_dict)
+from trainers.retrosynthesis import (
+        create_retrosynthesis_trainer,
+        create_retrosynthesis_evaluator)
 from trainers.utils import collect_embeddings
+
 from models import load_module
-from models.similarity import *
+from models.similarity import CosineSimilarity
 from models.loss import SimCLR
-from options import add_model_arguments
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda:0')
@@ -30,57 +37,29 @@ def main(args):
     mol_dict = load_molecule_dict(args.mol_dict)
     check_molecule_dict(mol_dict, datasets)
 
-    if args.augment is not None:
-        from datasets import ReactionDataset
-        datasets['aug'] = ReactionDataset.load(args.augment)
-        logger.info('Loading Augmented ReactionDataset ...')
-        logger.info('- {} reactions'.format(len(datasets['aug'])))
-
     ### DATALOADERS
     trainloader = build_dataloader(datasets['train'], batch_size=args.batch_size, num_iterations=args.num_iterations)
 
     ### MODELS
     module = load_module(args).to(device)
-    if args.pretrain is not None:
-        ckpt = torch.load(args.pretrain, map_location='cpu')
-        module.load_state_dict(ckpt['module'], strict=False)
 
     ### LOSS
-    if args.module == 'v1':
-        sim_fn = AttentionSimilarity()
-    elif args.module == 'v0':
-        sim_fn = CosineSimilarity()
+    sim_fn = CosineSimilarity()
     loss_fn = SimCLR(sim_fn, args.tau).to(device)
 
     ### OPTIMIZER
     params = list(module.parameters())
-    if args.optim == 'sgd':
-        optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=0.9)
-    elif args.optim == 'adam':
-        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd)
-
-    if args.schedule == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.num_iterations)
-
-    nearest_neighbors = defaultdict(list)
+    optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=0.9)
 
     ### TRAINER
+    nearest_neighbors = defaultdict(list)
     train_step = create_retrosynthesis_trainer(module,
                                                loss_fn,
                                                forward=not args.backward_only,
                                                nearest_neighbors=nearest_neighbors,
                                                num_neighbors=args.num_neighbors,
-                                               reduction=args.reduction,
                                                device=device)
-    if args.use_score:
-        score_fn = create_retrosynthesis_score_evaluator(module,
-                                                         sim_fn,
-                                                         device=device,
-                                                         reduction=args.reduction,
-                                                         forward=not args.backward_only)
-    else:
-        score_fn = None
-    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, beam=args.beam, score_fn=score_fn)
+    evaluate = create_retrosynthesis_evaluator(module, sim_fn, device=device, beam=1)
 
     ### TRAINING
     if args.resume:
@@ -123,16 +102,9 @@ def main(args):
         optimizer.zero_grad()
         outputs = train_step(reactions)
         outputs['loss'].backward()
-        if args.augment is not None:
-            aug_reactions = random.sample(list(range(len(datasets['aug']))), args.batch_size)
-            aug_reactions = [datasets['aug'][idx] for idx in aug_reactions]
-            aug_outputs = train_step(aug_reactions)
-            aug_outputs['loss'].mul(0.1).backward()
         if args.clip is not None:
             torch.nn.utils.clip_grad_norm_(params, args.clip)
         optimizer.step()
-        if args.schedule is not None:
-            scheduler.step()
 
         # LOGGING
         logger.info('[Iter {}] [BatchSize {}] [Loss {:.4f}] [BatchAcc {:.4f}]'.format(
@@ -152,29 +124,30 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    add_model_arguments(parser)
-    parser.add_argument('--logdir', type=str, required=True)
-    parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--datadir', type=str, default='/data/uspto/uspto50k_coley')
-    parser.add_argument('--mol-dict', type=str, default='/data/uspto/uspto50k_coley')
-    parser.add_argument('--backward-only', action='store_true')
-    parser.add_argument('--batch-size', type=int, default=64)
 
-    parser.add_argument('--pretrain', type=str, default=None)
-    parser.add_argument('--num-iterations', type=int, default=100000)
-    parser.add_argument('--optim', type=str, default='sgd')
-    parser.add_argument('--schedule', type=str, default=None)
-    parser.add_argument('--clip', type=float, default=5.0)
+    # Model arguments
+    parser.add_argument('--num-layers', type=int, default=5)
+    parser.add_argument('--dropout', type=float, default=0)
+    parser.add_argument('--use-label', action='store_true')
+    parser.add_argument('--use-sum', action='store_true')
+
+    # Optimization arguments
+    parser.add_argument('--num-iterations', type=int, default=200000)
+    parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-2)
     parser.add_argument('--wd', type=float, default=1e-5)
+    parser.add_argument('--clip', type=float, default=5.0)
     parser.add_argument('--tau', type=float, default=0.1)
     parser.add_argument('--eval-freq', type=int, default=1000)
-    parser.add_argument('--augment', type=str, default=None)
     parser.add_argument('--num-neighbors', type=int, default=0)
-    parser.add_argument('--beam', type=int, default=1)
-    parser.add_argument('--use-score', action='store_true')
-    parser.add_argument('--reduction', type=str, default=None)
-    args = parser.parse_args()
 
+    # Training arguments
+    parser.add_argument('--logdir', type=str, required=True)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--datadir', type=str, default='data/uspto_50k')
+    parser.add_argument('--mol-dict', type=str, default='data/uspto_candidates')
+    parser.add_argument('--backward-only', action='store_true')
+
+    args = parser.parse_args()
     main(args)
 

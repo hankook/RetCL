@@ -5,7 +5,6 @@ import logging
 from datasets import MoleculeDict, Reaction, build_dataloader
 
 logger = logging.getLogger('trainers.utils')
-
 cpu_device = torch.device('cpu')
 
 def convert_tensor(inputs, device=None, detach=True):
