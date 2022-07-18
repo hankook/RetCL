@@ -1,5 +1,11 @@
 # RetCL: A Selection-based Approach for Retrosynthesis via Contrastive Learning
 
+Accepted to IJCAI 2021
+
+<p align="center">
+<img width="762" alt="thumbnail" src="https://user-images.githubusercontent.com/4075389/179496459-c6b46a37-009f-4b36-a2b7-3b5da8814b36.png">
+</p>
+
 ## Prepare dependencies
 
 We use [Pytorch](https://pytorch.org/) for ML framework, [RDKit](https://www.rdkit.org/) for cheminformatics tool, and [DGL](https://www.dgl.ai/) for easy implementation of graph neural networks. We highly recommend to use [Anaconda](https://www.anaconda.com/products/individual) for managing package dependencies.
@@ -20,7 +26,7 @@ python preprocess.py --dataset uspto_50k --datadir data/uspto_50k_modified/
 python preprocess.py --dataset uspto_candidates --datadir data/uspto_candidates/
 ```
 
-Currently the USPTO-full dataset is not provided in this supplementray metrial due to the size limit. You can download the dataset from the [GLN](https://github.com/Hanjun-Dai/GLN) repository.
+You can download the USPTO-full dataset from the [GLN](https://github.com/Hanjun-Dai/GLN) repository.
 
 ## Evaluation
 
